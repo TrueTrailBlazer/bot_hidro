@@ -87,7 +87,6 @@ def salvar_na_planilha(quem, leitura):
 def deletar_intervalo_safe(row_index):
     """Apaga apenas as colunas A-D e desloca as células para cima, protegendo o painel lateral."""
     sheet = conectar_planilha("Dados")
-    
     body = {
         "requests": [
             {
@@ -97,7 +96,7 @@ def deletar_intervalo_safe(row_index):
                         "startRowIndex": row_index - 1,
                         "endRowIndex": row_index,
                         "startColumnIndex": 0,
-                        "endColumnIndex": 4  # Colunas A a D (0, 1, 2, 3)
+                        "endColumnIndex": 4  # Colunas A a D
                     },
                     "shiftDimension": "ROWS"
                 }
@@ -162,6 +161,15 @@ def teclado_horarios_principal():
     markup.row(InlineKeyboardButton("🗑️ Limpar Tudo", callback_data="limpar_horarios"), InlineKeyboardButton("❌ Voltar", callback_data="cancelar_acao"))
     return markup
 
+def teclado_cancelar():
+    return InlineKeyboardMarkup().row(InlineKeyboardButton("❌ Cancelar", callback_data="cancelar_acao"))
+
+def teclado_continuar_horarios():
+    markup = InlineKeyboardMarkup()
+    markup.row(InlineKeyboardButton("➕ Adicionar Outro", callback_data="add_horario"), InlineKeyboardButton("➖ Remover Outro", callback_data="rem_horario"))
+    markup.row(InlineKeyboardButton("❌ Voltar", callback_data="cancelar_acao"))
+    return markup
+
 @bot.message_handler(commands=["start"])
 def start(message):
     lista = ", ".join(sorted(horarios_noturnos)) if horarios_noturnos else "Nenhum"
@@ -175,7 +183,7 @@ def start(message):
     bot.send_message(message.chat.id, guia, parse_mode="HTML", reply_markup=teclado_principal())
 
 # ==========================================
-# LÓGICA DE EXCLUSÃO PROTEGIDA E HANDLERS
+# HANDLERS DE AÇÃO E SENHA
 # ==========================================
 @bot.message_handler(func=lambda m: estado_bot == "aguardando_senha_del" and m.content_type == "text")
 def receber_senha_exclusao(message):
@@ -193,6 +201,27 @@ def receber_senha_exclusao(message):
     estado_bot = "ocioso"
     linha_para_deletar = None
 
+@bot.message_handler(func=lambda m: m.text and "Liguei a Água" in m.text)
+def botao_liguei(message):
+    global estado_bot
+    estado_bot = "matinal"
+    bot.reply_to(message, "✅ Você ligou a água! 📸 Mande a foto ou digite a leitura AGORA.")
+    threading.Thread(target=monitorar_esquecimento, args=("ligar", message.from_user.first_name, message.chat.id)).start()
+
+@bot.message_handler(func=lambda m: m.text and "Desliguei a Água" in m.text)
+def botao_desliguei(message):
+    global estado_bot, quem_desligou_hoje
+    quem_desligou_hoje = message.from_user.first_name
+    estado_bot = "noturno"
+    bot.reply_to(message, "✅ Você desligou a água! 📸 Mande a leitura.")
+    threading.Thread(target=monitorar_esquecimento, args=("desligar", quem_desligou_hoje, message.chat.id)).start()
+
+@bot.message_handler(func=lambda m: m.text and "Leitura Avulsa" in m.text)
+def botao_avulso(message):
+    global estado_bot
+    estado_bot = "avulso"
+    bot.reply_to(message, "📸 <b>Leitura Avulsa</b>\nMande a foto ou digite (ex: 459,123)", parse_mode="HTML")
+
 @bot.message_handler(func=lambda m: m.text and "Configurações" in m.text)
 def botao_configuracoes(message):
     markup = InlineKeyboardMarkup()
@@ -201,18 +230,31 @@ def botao_configuracoes(message):
     markup.row(InlineKeyboardButton("❌ Cancelar", callback_data="cancelar_acao"))
     bot.reply_to(message, "⚙️ <b>Configurações</b>", parse_mode="HTML", reply_markup=markup)
 
+def monitorar_esquecimento(acao, usuario, chat_id):
+    time.sleep(180)
+    global estado_bot
+    if (acao == "ligar" and estado_bot == "matinal") or (acao == "desligar" and estado_bot == "noturno"):
+        estado_bot = "ocioso"
+        salvar_log(usuario, f"🚨 Esqueceu de anotar a leitura após {acao}ar.")
+        for cid in list(CONTATOS_FAMILIA.values()) + [MEU_CHAT_ID]:
+            try: bot.send_message(cid, f"⚠️ {usuario} {acao}u a água e esqueceu de mandar a leitura!")
+            except: pass
+
 # ==========================================
 # CALLBACKS INLINE (APAGAR, EDITAR, HORARIOS)
 # ==========================================
 @bot.callback_query_handler(func=lambda call: True)
 def escutar_callbacks(call):
+    # A DECLARAÇÃO GLOBAL DEVE VIR AQUI, NA PRIMEIRA LINHA DA FUNÇÃO
+    global estado_bot, linha_para_deletar, quem_desligou_hoje 
+    
     chat_id, msg_id, nome = call.message.chat.id, call.message.message_id, call.from_user.first_name
 
     if call.data == "cancelar_acao":
+        bot.clear_step_handler_by_chat_id(chat_id)
         bot.edit_message_text("❌ Ação encerrada.", chat_id, msg_id)
         
     elif call.data == "editar_leitura":
-        global estado_bot
         estado_bot = "editando"
         bot.edit_message_text("✏️ <b>Modo de Correção</b>\nEnvie o novo valor para sobrescrever a última linha:", chat_id, msg_id, parse_mode="HTML")
 
@@ -234,7 +276,6 @@ def escutar_callbacks(call):
         except Exception as e: bot.edit_message_text(f"❌ Erro: {e}", chat_id, msg_id)
 
     elif call.data.startswith("del_"):
-        global linha_para_deletar, estado_bot
         linha_para_deletar = int(call.data.split("_")[1])
         estado_bot = "aguardando_senha_del"
         bot.edit_message_text("🔒 <b>Ação Restrita</b>\nDigite a Palavra-Chave para confirmar a exclusão parcial da tabela:", chat_id, msg_id, parse_mode="HTML")
@@ -243,8 +284,66 @@ def escutar_callbacks(call):
         lista = "\n".join(f"- {h}" for h in sorted(horarios_noturnos)) if horarios_noturnos else "Nenhum."
         bot.edit_message_text(f"🕒 <b>Horários Atuais</b>\n{lista}", chat_id, msg_id, parse_mode="HTML", reply_markup=teclado_horarios_principal())
 
+    elif call.data == "add_horario":
+        bot.edit_message_text("➕ Digite o horário para adicionar (ex: 18h, 18:30):", chat_id, msg_id, reply_markup=teclado_cancelar())
+        bot.register_next_step_handler(call.message, processar_add_horario)
+
+    elif call.data == "rem_horario":
+        lista = "\n".join(f"- {h}" for h in sorted(horarios_noturnos)) if horarios_noturnos else "Nenhum."
+        bot.edit_message_text(f"➖ Horários:\n{lista}\n\nDigite qual você quer remover:", chat_id, msg_id, reply_markup=teclado_cancelar())
+        bot.register_next_step_handler(call.message, processar_rem_horario)
+
+    elif call.data == "limpar_horarios":
+        horarios_noturnos.clear()
+        aplicar_agendamentos()
+        bot.edit_message_text("🗑️ Todos os horários foram removidos.", chat_id, msg_id)
+
+    elif call.data == "sim_desligado":
+        if quem_desligou_hoje:
+            bot.answer_callback_query(call.id, f"{quem_desligou_hoje} já confirmou.")
+            return
+        quem_desligou_hoje = nome
+        estado_bot = "noturno"
+        bot.edit_message_text(f"✅ Valeu, {nome}! Você desligou a água.\n\n📸 *Mande a foto ou digite a leitura AGORA*.", chat_id, msg_id, parse_mode="Markdown")
+        threading.Thread(target=monitorar_esquecimento, args=("desligar", nome, chat_id)).start()
+
+    elif call.data == "nao_desligado":
+        bot.edit_message_text("⚠️ Sem problemas! Feche assim que puder.", chat_id, msg_id)
+
 # ==========================================
-# PROCESSAMENTO E AGENDAMENTOS
+# FUNÇÕES DE LÓGICA DE HORÁRIOS
+# ==========================================
+def normalizar_horario(texto):
+    padrao = re.match(r'^(\d{1,2})[h:]?(\d{2})?$', texto.strip().lower())
+    if padrao:
+        h, m = int(padrao.group(1)), int(padrao.group(2) or 0)
+        if 0 <= h <= 23 and 0 <= m <= 59: return f"{h:02d}:{m:02d}"
+    return None
+
+def processar_add_horario(message):
+    h = normalizar_horario(message.text)
+    if h and h not in horarios_noturnos:
+        horarios_noturnos.append(h)
+        aplicar_agendamentos()
+        bot.send_message(message.chat.id, f"✅ Horário {h} adicionado!", reply_markup=teclado_continuar_horarios())
+    else:
+        bot.send_message(message.chat.id, "❌ Inválido ou já existe.", reply_markup=teclado_continuar_horarios())
+
+def processar_rem_horario(message):
+    h = normalizar_horario(message.text)
+    if h in horarios_noturnos:
+        horarios_noturnos.remove(h)
+        aplicar_agendamentos()
+        bot.send_message(message.chat.id, f"🗑️ Horário {h} removido.", reply_markup=teclado_continuar_horarios())
+    else:
+        bot.send_message(message.chat.id, "❌ Não encontrado.", reply_markup=teclado_continuar_horarios())
+
+def resetar_status_diario():
+    global quem_desligou_hoje
+    quem_desligou_hoje = None
+
+# ==========================================
+# PROCESSAMENTO E LÓGICA DE MENSAGENS
 # ==========================================
 @bot.message_handler(func=lambda m: estado_bot in ["matinal", "noturno", "avulso", "editando"] and m.content_type == "text" and m.text not in TEXTOS_BOTOES)
 def receber_texto(message):
@@ -295,11 +394,17 @@ def processar_leitura(message, bruta, msg_wait=None):
 # --- AGENDAMENTOS ---
 def aplicar_agendamentos():
     schedule.clear()
+    schedule.every().day.at("18:00").do(resetar_status_diario)
     for h in set(horarios_noturnos):
         schedule.every().day.at(h).do(lambda: threading.Thread(target=lambda: [bot.send_message(c, "🌙 Já desligou a água?", reply_markup=InlineKeyboardMarkup().row(InlineKeyboardButton("✅ Sim", callback_data="sim_desligado"), InlineKeyboardButton("❌ Não", callback_data="nao_desligado"))) for c in list(CONTATOS_FAMILIA.values()) + [MEU_CHAT_ID]]).start())
+
+def loop_agendamento():
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
 
 if __name__ == "__main__":
     aplicar_agendamentos()
     threading.Thread(target=run_web, daemon=True).start()
-    threading.Thread(target=lambda: [schedule.run_pending() or time.sleep(1) for _ in iter(int, 1)], daemon=True).start()
+    threading.Thread(target=loop_agendamento, daemon=True).start()
     bot.infinity_polling()
