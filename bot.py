@@ -91,15 +91,11 @@ def conectar_planilha(aba):
 
 
 def salvar_na_planilha(quem, leitura):
-    try:
-        sheet = conectar_planilha("Dados")
-        data_atual = datetime.now().strftime("%d/%m/%Y")
-        hora_atual = datetime.now().strftime("%H:%M:%S")
-        sheet.append_row([data_atual, hora_atual, quem, leitura], table_range="A:D")
-        return True
-    except Exception as e:
-        print(f"❌ [ERRO PLANILHA DADOS] {e}")
-        return False
+    sheet = conectar_planilha("Dados")
+    data_atual = datetime.now().strftime("%d/%m/%Y")
+    hora_atual = datetime.now().strftime("%H:%M:%S")
+    sheet.append_row([data_atual, hora_atual, quem, leitura], table_range="A:D")
+    return True
 
 
 def salvar_log(quem, acao):
@@ -298,17 +294,18 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
             f"✅ Leitura Noturna ({val}) salva!", message.chat.id, msg_wait.message_id
         )
     elif est_ant == "matinal" or est_ant == "avulso":
-        if salvar_na_planilha(message.from_user.first_name, val):
-            tipo = "Matinal" if est_ant == "matinal" else "Avulsa"
-            salvar_log(message.from_user.first_name, f"{tipo}. Marcador: {val}")
+        try:
+            if salvar_na_planilha(message.from_user.first_name, val):
+                tipo = "Matinal" if est_ant == "matinal" else "Avulsa"
+                salvar_log(message.from_user.first_name, f"{tipo}. Marcador: {val}")
+                bot.edit_message_text(
+                    f"✅ Leitura {tipo} ({val}) salva!",
+                    message.chat.id,
+                    msg_wait.message_id,
+                )
+        except Exception as e:
             bot.edit_message_text(
-                f"✅ Leitura {tipo} ({val}) salva!",
-                message.chat.id,
-                msg_wait.message_id,
-            )
-        else:
-            bot.edit_message_text(
-                "❌ Erro ao salvar na planilha. Verifique os logs do Render.",
+                f"❌ Erro Técnico: {str(e)}",
                 message.chat.id,
                 msg_wait.message_id,
             )
