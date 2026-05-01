@@ -291,6 +291,12 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
                 message.chat.id,
                 msg_wait.message_id,
             )
+        else:
+            bot.edit_message_text(
+                "❌ Erro ao salvar na planilha. Verifique os logs do Render.",
+                message.chat.id,
+                msg_wait.message_id,
+            )
     estado_bot = "ocioso"
 
 
