@@ -70,7 +70,22 @@ def conectar_planilha(aba):
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive",
     ]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+
+    # Tenta achar o arquivo em locais comuns do Render ou local
+    caminhos_tentar = ["credentials.json", "/etc/secrets/credentials.json"]
+    path_final = None
+
+    for p in caminhos_tentar:
+        if os.path.exists(p):
+            path_final = p
+            break
+
+    if not path_final:
+        raise FileNotFoundError(
+            "Arquivo credentials.json não encontrado em nenhum local conhecido."
+        )
+
+    creds = ServiceAccountCredentials.from_json_keyfile_name(path_final, scope)
     client = gspread.authorize(creds)
     return client.open(NOME_PLANILHA).worksheet(aba)
 
