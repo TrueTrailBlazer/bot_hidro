@@ -1,8 +1,0 @@
-pyTelegramBotAPI
-gspread
-oauth2client
-Pillow
-requests
-python-dotenv
-Flask
-gunicorn
