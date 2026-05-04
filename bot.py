@@ -65,6 +65,25 @@ def carregar_horarios():
     return ["19:00", "21:00", "23:00"]
 
 horarios_noturnos = carregar_horarios()
+
+def salvar_e_recarregar_horarios():
+    global horarios_noturnos
+    with open("horarios.txt", "w") as f:
+        f.write(",".join(horarios_noturnos))
+    schedule.clear()
+    for hora in horarios_noturnos:
+        schedule.every().day.at(hora).do(verificar_e_avisar_noturno)
+
+def gerar_teclado_horarios():
+    markup = InlineKeyboardMarkup(row_width=2)
+    botoes = []
+    for hora in horarios_noturnos:
+        botoes.append(InlineKeyboardButton(hora, callback_data=f"sel_hora_{hora}"))
+    if botoes:
+        markup.add(*botoes)
+    markup.add(InlineKeyboardButton("➕ Adicionar Novo", callback_data="add_hora"))
+    markup.add(InlineKeyboardButton("❌ Fechar Painel", callback_data="fechar_painel"))
+    return markup
 TEXTOS_BOTOES = [
     "🟢 Liguei a Água",
     "🔴 Desliguei a Água",
@@ -275,13 +294,9 @@ def botao_avulso(message):
 @bot.message_handler(func=lambda m: m.text and "Configurar Horários" in m.text)
 def botao_configurar(message):
     global estado_bot
-    estado_bot = "configurando_horarios"
-    texto = (
-        f"🕒 <b>Horários Atuais de Aviso:</b> {', '.join(horarios_noturnos)}\n\n"
-        "Para alterar, digite os novos horários separados por vírgula no formato HH:MM.\n"
-        "<i>Exemplo: 18:30, 20:00, 22:30</i>"
-    )
-    bot.reply_to(message, texto, parse_mode="HTML")
+    estado_bot = "ocioso"
+    texto = "🕒 <b>Painel de Horários de Aviso</b>\n\nSelecione um horário para gerenciar ou adicione um novo:"
+    bot.send_message(message.chat.id, texto, parse_mode="HTML", reply_markup=gerar_teclado_horarios())
 
 
 def monitorar_esquecimento(acao, usuario, chat_id, token_recebido):
@@ -308,7 +323,7 @@ def monitorar_esquecimento(acao, usuario, chat_id, token_recebido):
 # --- PROCESSAMENTO DE DADOS ---
 @bot.message_handler(
     func=lambda m: (
-        estado_bot in ["matinal", "noturno", "avulso", "editando", "configurando_horarios"]
+        (estado_bot in ["matinal", "noturno", "avulso", "editando", "add_horario_wait"] or str(estado_bot).startswith("edit_horario_wait_"))
         and m.content_type == "text"
         and m.text not in TEXTOS_BOTOES
     )
@@ -316,20 +331,36 @@ def monitorar_esquecimento(acao, usuario, chat_id, token_recebido):
 def receber_texto(message):
     global estado_bot, horarios_noturnos
     
-    if estado_bot == "configurando_horarios":
-        novos_horarios = re.findall(r"\d{1,2}:\d{2}", message.text)
-        if novos_horarios:
-            horarios_noturnos = novos_horarios
-            with open("horarios.txt", "w") as f:
-                f.write(",".join(novos_horarios))
-            # Reinicia os agendamentos em tempo real
-            schedule.clear()
-            for hora in horarios_noturnos:
-                schedule.every().day.at(hora).do(verificar_e_avisar_noturno)
-            bot.reply_to(message, f"✅ Horários atualizados com sucesso para: {', '.join(novos_horarios)}!")
+    if estado_bot == "add_horario_wait":
+        match = re.findall(r"\d{1,2}:\d{2}", message.text)
+        if match:
+            novo = match[0]
+            if novo not in horarios_noturnos:
+                horarios_noturnos.append(novo)
+                horarios_noturnos.sort()
+                salvar_e_recarregar_horarios()
+                bot.reply_to(message, f"✅ Horário {novo} adicionado!", reply_markup=gerar_teclado_horarios())
+            else:
+                bot.reply_to(message, "❌ Esse horário já existe.")
             estado_bot = "ocioso"
         else:
-            bot.reply_to(message, "❌ Formato inválido. Tente novamente usando HH:MM (ex: 18:00, 20:30).")
+            bot.reply_to(message, "❌ Formato inválido. Tente novamente usando HH:MM.")
+        return
+        
+    if str(estado_bot).startswith("edit_horario_wait_"):
+        velho = estado_bot.split("_")[3]
+        match = re.findall(r"\d{1,2}:\d{2}", message.text)
+        if match:
+            novo = match[0]
+            if velho in horarios_noturnos:
+                idx = horarios_noturnos.index(velho)
+                horarios_noturnos[idx] = novo
+                horarios_noturnos.sort()
+                salvar_e_recarregar_horarios()
+                bot.reply_to(message, f"✅ Horário alterado de {velho} para {novo}!", reply_markup=gerar_teclado_horarios())
+            estado_bot = "ocioso"
+        else:
+            bot.reply_to(message, "❌ Formato inválido. Tente novamente usando HH:MM.")
         return
 
     # Trata erros comuns de digitação com espaços: "123. 45" ou "123, 45" vira "123,45"
@@ -446,19 +477,17 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
             )
     estado_bot = "ocioso"
 
-@bot.callback_query_handler(func=lambda call: call.data in ["apagar_ultima", "editar_ultima"])
-def callback_inline(call):
-    global estado_bot
+@bot.callback_query_handler(func=lambda call: True)
+def callback_geral(call):
+    global estado_bot, horarios_noturnos
     try:
+        # --- Lógica Antiga: Leituras ---
         if call.data == "apagar_ultima":
-            # Remove os botões antigos para não ficarem "fantasmas" na conversa
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-            
             sheet = conectar_planilha("Dados")
             linhas = sheet.col_values(1)
             ultima_linha = len(linhas)
             if ultima_linha > 1:
-                # Limpa a linha preservando a estrutura
                 sheet.batch_clear([f"A{ultima_linha}:D{ultima_linha}"])
                 bot.edit_message_text("🗑️ Última leitura apagada da planilha!", call.message.chat.id, call.message.message_id)
                 salvar_log(call.from_user.first_name, "Apagou a última leitura")
@@ -466,11 +495,57 @@ def callback_inline(call):
                 bot.answer_callback_query(call.id, "Nenhuma leitura encontrada para apagar.")
         elif call.data == "editar_ultima":
             estado_bot = "editando"
-            # Remove os botões antigos para impedir cliques acidentais no passado
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-            
             bot.send_message(call.message.chat.id, "✏️ <b>Modo de Edição</b>\nDigite a leitura correta ou envie a foto corrigida:", parse_mode="HTML")
             bot.answer_callback_query(call.id, "Aguardando nova leitura...")
+            
+        # --- Lógica Nova: Painel de Horários ---
+        elif call.data == "fechar_painel":
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            
+        elif call.data.startswith("sel_hora_"):
+            hora = call.data.split("_")[2]
+            markup = InlineKeyboardMarkup()
+            markup.add(
+                InlineKeyboardButton("✏️ Editar", callback_data=f"edit_hora_{hora}"),
+                InlineKeyboardButton("❌ Apagar", callback_data=f"del_hora_{hora}")
+            )
+            markup.add(InlineKeyboardButton("🔙 Voltar", callback_data="voltar_painel"))
+            bot.edit_message_text(f"🕒 Gerenciando horário: <b>{hora}</b>", call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            
+        elif call.data == "voltar_painel":
+            bot.edit_message_text(
+                "🕒 <b>Painel de Horários de Aviso</b>\n\nSelecione um horário para gerenciar ou adicione um novo:", 
+                call.message.chat.id, 
+                call.message.message_id, 
+                parse_mode="HTML", 
+                reply_markup=gerar_teclado_horarios()
+            )
+            
+        elif call.data.startswith("del_hora_"):
+            hora = call.data.split("_")[2]
+            if hora in horarios_noturnos:
+                horarios_noturnos.remove(hora)
+                salvar_e_recarregar_horarios()
+                bot.answer_callback_query(call.id, f"Horário {hora} apagado!")
+                bot.edit_message_text(
+                    "🕒 <b>Painel de Horários de Aviso</b>\n\nSelecione um horário para gerenciar ou adicione um novo:", 
+                    call.message.chat.id, 
+                    call.message.message_id, 
+                    parse_mode="HTML", 
+                    reply_markup=gerar_teclado_horarios()
+                )
+                
+        elif call.data == "add_hora":
+            global estado_bot
+            estado_bot = "add_horario_wait"
+            bot.edit_message_text("➕ Digite o novo horário no formato HH:MM (ex: 18:30):", call.message.chat.id, call.message.message_id)
+            
+        elif call.data.startswith("edit_hora_"):
+            hora = call.data.split("_")[2]
+            estado_bot = f"edit_horario_wait_{hora}"
+            bot.edit_message_text(f"✏️ Digite o novo valor para o horário {hora} (ex: 19:30):", call.message.chat.id, call.message.message_id)
+            
     except Exception as e:
         bot.answer_callback_query(call.id, f"Erro: {str(e)}")
 
