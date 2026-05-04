@@ -22,7 +22,7 @@ from telebot.types import (
 
 # --- CONFIGURAÇÃO DE AMBIENTE ---
 load_dotenv()
-os.environ["TZ"] = "America/Sao_Paulo"
+os.environ["TZ"] = "America/Campo_Grande"
 if hasattr(time, "tzset"):
     time.tzset()
 
