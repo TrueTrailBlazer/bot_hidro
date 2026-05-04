@@ -21,7 +21,7 @@ from telebot.types import (
 
 # --- CONFIGURAÇÃO DE AMBIENTE ---
 load_dotenv()
-os.environ["TZ"] = "America/Grande_Grande"
+os.environ["TZ"] = "America/Sao_Paulo"
 if hasattr(time, "tzset"):
     time.tzset()
 
@@ -209,6 +209,7 @@ def botao_liguei(message):
     token_atual = token_acao
     
     salvar_log(message.from_user.first_name, "Ligou a água")
+    salvar_na_planilha(message.from_user.first_name, "Ação: LIGOU a água")
     bot.reply_to(
         message, "✅ Você ligou a água! 📸 Mande a foto ou digite a leitura AGORA."
     )
@@ -237,6 +238,7 @@ def botao_desliguei(message):
     token_atual = token_acao
     
     salvar_log(message.from_user.first_name, "Desligou a água")
+    salvar_na_planilha(message.from_user.first_name, "Ação: DESLIGOU a água")
     bot.reply_to(
         message,
         "✅ Você desligou a água! 📸 Mande a leitura para o teste de estanqueidade.",
@@ -364,6 +366,10 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
         salvar_log(message.from_user.first_name, f"Desligou. Marcador: {val}")
         with open("leitura_noturna.txt", "w") as f:
             f.write(val)
+        try:
+            salvar_na_planilha(message.from_user.first_name, val)
+        except:
+            pass
         msg_sucesso(f"✅ Leitura Noturna ({val})")
     elif est_ant == "matinal" or est_ant == "avulso":
         try:
