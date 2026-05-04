@@ -2,6 +2,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from datetime import datetime
 
 import gspread
@@ -145,11 +146,14 @@ def extrair_texto_da_foto(file_path):
                 "https://api.ocr.space/parse/image",
                 files={file_path: f},
                 data={"apikey": OCR_API_KEY, "language": "eng", "OCREngine": "2"},
+                timeout=15
             )
         res = r.json()
         if res.get("ParsedResults"):
             # Preserva vírgula ou ponto para separar pretos de vermelhos
             txt = res["ParsedResults"][0]["ParsedText"]
+            # Limpa espaços acidentais após vírgula/ponto: "123. 45" -> "123,45"
+            txt = re.sub(r'(\d)[\.,]\s+(\d)', r'\1,\2', txt)
             # Procura por números que podem ter vírgula ou ponto (ex: 459,123)
             # Aceita inteiros de 3 a 6 dígitos ou números com separador decimal
             cand = re.findall(r"\d+[\.,]\d+|\d{3,6}", txt)
@@ -291,8 +295,10 @@ def monitorar_esquecimento(acao, usuario, chat_id, token_recebido):
     )
 )
 def receber_texto(message):
+    # Trata erros comuns de digitação com espaços: "123. 45" ou "123, 45" vira "123,45"
+    texto_limpo = re.sub(r'(\d)[\.,]\s+(\d)', r'\1,\2', message.text)
     # Regex para aceitar números inteiros ou com separador decimal (vírgula ou ponto)
-    numeros = re.findall(r"\d+[\.,]\d+|\d+", message.text)
+    numeros = re.findall(r"\d+[\.,]\d+|\d+", texto_limpo)
     if numeros:
         processar_leitura(message, numeros[0])
     else:
@@ -307,10 +313,24 @@ def receber_foto(message):
         msg_wait = bot.reply_to(message, "⏳ Processando imagem...")
         file_info = bot.get_file(message.photo[-1].file_id)
         raw_data = bot.download_file(file_info.file_path)
-        with open("original.jpg", "wb") as f:
+        
+        # Cria nomes de arquivo únicos para evitar colisão entre usuários
+        token_img = str(uuid.uuid4())
+        path_orig = f"orig_{token_img}.jpg"
+        path_otim = f"otim_{token_img}.jpg"
+        
+        with open(path_orig, "wb") as f:
             f.write(raw_data)
-        comprimir_imagem("original.jpg", "otimizada.jpg")
-        leitura = extrair_texto_da_foto("otimizada.jpg")
+        comprimir_imagem(path_orig, path_otim)
+        leitura = extrair_texto_da_foto(path_otim)
+        
+        # Limpa os arquivos temporários
+        try:
+            os.remove(path_orig)
+            os.remove(path_otim)
+        except:
+            pass
+            
         if leitura != "Não lido":
             processar_leitura(message, leitura, msg_wait)
         else:
@@ -356,7 +376,12 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
                 val_float = float(val.replace(",", "."))
                 sheet.update_cell(ultima_linha, 4, val_float)
                 salvar_log(message.from_user.first_name, f"Editou. Novo Marcador: {val}")
-                bot.edit_message_text(f"✅ Leitura editada com sucesso para {val}!", message.chat.id, msg_wait.message_id)
+                bot.edit_message_text(
+                    f"✅ Leitura editada com sucesso para {val}!", 
+                    message.chat.id, 
+                    msg_wait.message_id, 
+                    reply_markup=markup
+                )
             else:
                 bot.edit_message_text("❌ Não há dados para editar.", message.chat.id, msg_wait.message_id)
         except Exception as e:
@@ -389,6 +414,9 @@ def callback_inline(call):
     global estado_bot
     try:
         if call.data == "apagar_ultima":
+            # Remove os botões antigos para não ficarem "fantasmas" na conversa
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+            
             sheet = conectar_planilha("Dados")
             linhas = sheet.col_values(1)
             ultima_linha = len(linhas)
@@ -401,6 +429,9 @@ def callback_inline(call):
                 bot.answer_callback_query(call.id, "Nenhuma leitura encontrada para apagar.")
         elif call.data == "editar_ultima":
             estado_bot = "editando"
+            # Remove os botões antigos para impedir cliques acidentais no passado
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+            
             bot.send_message(call.message.chat.id, "✏️ <b>Modo de Edição</b>\nDigite a leitura correta ou envie a foto corrigida:", parse_mode="HTML")
             bot.answer_callback_query(call.id, "Aguardando nova leitura...")
     except Exception as e:
