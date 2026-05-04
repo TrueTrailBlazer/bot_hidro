@@ -537,7 +537,6 @@ def callback_geral(call):
                 )
                 
         elif call.data == "add_hora":
-            global estado_bot
             estado_bot = "add_horario_wait"
             bot.edit_message_text("➕ Digite o novo horário no formato HH:MM (ex: 18:30):", call.message.chat.id, call.message.message_id)
             
