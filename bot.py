@@ -7,6 +7,7 @@ from datetime import datetime
 import gspread
 import requests
 import telebot
+import schedule
 from dotenv import load_dotenv
 from flask import Flask
 from oauth2client.service_account import ServiceAccountCredentials
@@ -408,7 +409,36 @@ def callback_inline(call):
         bot.answer_callback_query(call.id, f"Erro: {str(e)}")
 
 
+# --- AGENDAMENTO DE LEMBRETES (Sincronizado com controle_diario) ---
+def verificar_e_avisar_noturno():
+    global controle_diario
+    data_hoje = datetime.now().strftime("%d/%m/%Y")
+    
+    # Se ainda não desligaram hoje (ou a data virou e não resetou)
+    if controle_diario["data"] != data_hoje or not controle_diario["desligar"]:
+        texto_aviso = "📢 <b>Lembrete Noturno:</b> Alguém já desligou a água? Se sim, não esqueça de registrar no botão 🔴!"
+        for cid in list(CONTATOS_FAMILIA.values()) + [MEU_CHAT_ID]:
+            try:
+                if cid:
+                    bot.send_message(cid, texto_aviso, parse_mode="HTML")
+            except:
+                pass
+
+def run_scheduler():
+    # Configura os horários baseados na variável global
+    for hora in horarios_noturnos:
+        schedule.every().day.at(hora).do(verificar_e_avisar_noturno)
+    
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
+
+
 if __name__ == "__main__":
+    # Inicia Web Server para Keep-Alive
     threading.Thread(target=run_web, daemon=True).start()
-    print("🚀 Bot iniciado!")
+    # Inicia Scheduler de lembretes noturnos
+    threading.Thread(target=run_scheduler, daemon=True).start()
+    
+    print("🚀 Bot iniciado com Lembretes Noturnos ativos!")
     bot.infinity_polling()
