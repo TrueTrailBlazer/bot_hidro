@@ -63,6 +63,10 @@ TEXTOS_BOTOES = [
     "🕒 Configurar Horários",
 ]
 
+# Variáveis de controle diário e tokens de concorrência
+controle_diario = {"data": None, "ligar": None, "desligar": None}
+token_acao = 0
+
 
 # --- CONEXÃO E SALVAMENTO (GOOGLE SHEETS) ---
 def conectar_planilha(aba):
@@ -94,7 +98,15 @@ def salvar_na_planilha(quem, leitura):
     sheet = conectar_planilha("Dados")
     data_atual = datetime.now().strftime("%d/%m/%Y")
     hora_atual = datetime.now().strftime("%H:%M:%S")
-    sheet.append_row([data_atual, hora_atual, quem, leitura], table_range="A:D")
+    
+    # Tenta converter para float para que o gspread envie como número JSON
+    try:
+        if isinstance(leitura, str):
+            leitura = float(leitura.replace(",", "."))
+    except ValueError:
+        pass
+        
+    sheet.append_row([data_atual, hora_atual, quem, leitura], table_range="A:D", value_input_option="USER_ENTERED")
     return True
 
 
@@ -181,29 +193,57 @@ def start(message):
 # --- HANDLERS DE AÇÃO ---
 @bot.message_handler(func=lambda m: m.text and "Liguei a Água" in m.text)
 def botao_liguei(message):
-    global estado_bot
+    global estado_bot, controle_diario, token_acao
+    data_hoje = datetime.now().strftime("%d/%m/%Y")
+    
+    if controle_diario["data"] != data_hoje:
+        controle_diario = {"data": data_hoje, "ligar": None, "desligar": None}
+        
+    if controle_diario["ligar"]:
+        bot.reply_to(message, f"⚠️ A água já foi ligada hoje por {controle_diario['ligar']}! Se quiser mandar outra leitura, use Leitura Avulsa.")
+        return
+
+    controle_diario["ligar"] = message.from_user.first_name
     estado_bot = "matinal"
+    token_acao += 1
+    token_atual = token_acao
+    
+    salvar_log(message.from_user.first_name, "Ligou a água")
     bot.reply_to(
         message, "✅ Você ligou a água! 📸 Mande a foto ou digite a leitura AGORA."
     )
     threading.Thread(
         target=monitorar_esquecimento,
-        args=("ligar", message.from_user.first_name, message.chat.id),
+        args=("ligar", message.from_user.first_name, message.chat.id, token_atual),
     ).start()
 
 
 @bot.message_handler(func=lambda m: m.text and "Desliguei a Água" in m.text)
 def botao_desliguei(message):
-    global estado_bot, quem_desligou_hoje
+    global estado_bot, quem_desligou_hoje, controle_diario, token_acao
+    data_hoje = datetime.now().strftime("%d/%m/%Y")
+    
+    if controle_diario["data"] != data_hoje:
+        controle_diario = {"data": data_hoje, "ligar": None, "desligar": None}
+        
+    if controle_diario["desligar"]:
+        bot.reply_to(message, f"⚠️ A água já foi desligada hoje por {controle_diario['desligar']}! Se quiser mandar outra leitura, use Leitura Avulsa.")
+        return
+
     quem_desligou_hoje = message.from_user.first_name
+    controle_diario["desligar"] = quem_desligou_hoje
     estado_bot = "noturno"
+    token_acao += 1
+    token_atual = token_acao
+    
+    salvar_log(message.from_user.first_name, "Desligou a água")
     bot.reply_to(
         message,
         "✅ Você desligou a água! 📸 Mande a leitura para o teste de estanqueidade.",
     )
     threading.Thread(
         target=monitorar_esquecimento,
-        args=("desligar", quem_desligou_hoje, message.chat.id),
+        args=("desligar", quem_desligou_hoje, message.chat.id, token_atual),
     ).start()
 
 
@@ -220,18 +260,22 @@ def botao_avulso(message):
     bot.reply_to(message, texto, parse_mode="HTML")
 
 
-def monitorar_esquecimento(acao, usuario, chat_id):
+def monitorar_esquecimento(acao, usuario, chat_id, token_recebido):
     time.sleep(180)
-    global estado_bot
+    global estado_bot, token_acao
+    if token_recebido != token_acao:
+        return # Ação obsoleta
+        
     if (acao == "ligar" and estado_bot == "matinal") or (
         acao == "desligar" and estado_bot == "noturno"
     ):
         estado_bot = "ocioso"
-        salvar_log(usuario, f"🚨 Esqueceu de anotar a leitura após {acao}ar.")
+        salvar_log(usuario, f"🚨 Esqueceu de anotar a leitura após {acao}.")
+        verbo = "ligou" if acao == "ligar" else "desligou"
         for cid in list(CONTATOS_FAMILIA.values()) + [MEU_CHAT_ID]:
             try:
                 bot.send_message(
-                    cid, f"⚠️ {usuario} {acao}u a água e esqueceu de mandar a leitura!"
+                    cid, f"⚠️ {usuario} {verbo} a água e esqueceu de mandar a leitura!"
                 )
             except:
                 pass
@@ -240,7 +284,7 @@ def monitorar_esquecimento(acao, usuario, chat_id):
 # --- PROCESSAMENTO DE DADOS ---
 @bot.message_handler(
     func=lambda m: (
-        estado_bot in ["matinal", "noturno", "avulso"]
+        estado_bot in ["matinal", "noturno", "avulso", "editando"]
         and m.content_type == "text"
         and m.text not in TEXTOS_BOTOES
     )
@@ -258,7 +302,7 @@ def receber_texto(message):
 
 @bot.message_handler(content_types=["photo"])
 def receber_foto(message):
-    if estado_bot in ["matinal", "noturno", "avulso"]:
+    if estado_bot in ["matinal", "noturno", "avulso", "editando"]:
         msg_wait = bot.reply_to(message, "⏳ Processando imagem...")
         file_info = bot.get_file(message.photo[-1].file_id)
         raw_data = bot.download_file(file_info.file_path)
@@ -283,26 +327,50 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
     if not msg_wait:
         msg_wait = bot.reply_to(message, "⏳ Salvando...")
 
-    # Normaliza para usar vírgula como separador
+    # Normaliza para usar vírgula como separador visual
     val = leitura_bruta.replace(".", ",")
+    
+    # Prepara o teclado para edição e exclusão
+    markup = InlineKeyboardMarkup()
+    markup.add(
+        InlineKeyboardButton("✏️ Editar", callback_data="editar_ultima"),
+        InlineKeyboardButton("❌ Apagar", callback_data="apagar_ultima")
+    )
 
-    if est_ant == "noturno":
+    # Função auxiliar para editar a mensagem final incluindo o nome e os botões
+    def msg_sucesso(texto_base):
+        bot.edit_message_text(
+            f"{texto_base} salva por {message.from_user.first_name}!",
+            message.chat.id,
+            msg_wait.message_id,
+            reply_markup=markup
+        )
+
+    if est_ant == "editando":
+        try:
+            sheet = conectar_planilha("Dados")
+            linhas = sheet.col_values(1)
+            ultima_linha = len(linhas)
+            if ultima_linha > 1:
+                val_float = float(val.replace(",", "."))
+                sheet.update_cell(ultima_linha, 4, val_float)
+                salvar_log(message.from_user.first_name, f"Editou. Novo Marcador: {val}")
+                bot.edit_message_text(f"✅ Leitura editada com sucesso para {val}!", message.chat.id, msg_wait.message_id)
+            else:
+                bot.edit_message_text("❌ Não há dados para editar.", message.chat.id, msg_wait.message_id)
+        except Exception as e:
+            bot.edit_message_text(f"❌ Erro Técnico ao editar: {str(e)}", message.chat.id, msg_wait.message_id)
+    elif est_ant == "noturno":
         salvar_log(message.from_user.first_name, f"Desligou. Marcador: {val}")
         with open("leitura_noturna.txt", "w") as f:
             f.write(val)
-        bot.edit_message_text(
-            f"✅ Leitura Noturna ({val}) salva!", message.chat.id, msg_wait.message_id
-        )
+        msg_sucesso(f"✅ Leitura Noturna ({val})")
     elif est_ant == "matinal" or est_ant == "avulso":
         try:
             if salvar_na_planilha(message.from_user.first_name, val):
                 tipo = "Matinal" if est_ant == "matinal" else "Avulsa"
                 salvar_log(message.from_user.first_name, f"{tipo}. Marcador: {val}")
-                bot.edit_message_text(
-                    f"✅ Leitura {tipo} ({val}) salva!",
-                    message.chat.id,
-                    msg_wait.message_id,
-                )
+                msg_sucesso(f"✅ Leitura {tipo} ({val})")
         except Exception as e:
             bot.edit_message_text(
                 f"❌ Erro Técnico: {str(e)}",
@@ -310,6 +378,28 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
                 msg_wait.message_id,
             )
     estado_bot = "ocioso"
+
+@bot.callback_query_handler(func=lambda call: call.data in ["apagar_ultima", "editar_ultima"])
+def callback_inline(call):
+    global estado_bot
+    try:
+        if call.data == "apagar_ultima":
+            sheet = conectar_planilha("Dados")
+            linhas = sheet.col_values(1)
+            ultima_linha = len(linhas)
+            if ultima_linha > 1:
+                # Limpa a linha preservando a estrutura
+                sheet.batch_clear([f"A{ultima_linha}:D{ultima_linha}"])
+                bot.edit_message_text("🗑️ Última leitura apagada da planilha!", call.message.chat.id, call.message.message_id)
+                salvar_log(call.from_user.first_name, "Apagou a última leitura")
+            else:
+                bot.answer_callback_query(call.id, "Nenhuma leitura encontrada para apagar.")
+        elif call.data == "editar_ultima":
+            estado_bot = "editando"
+            bot.send_message(call.message.chat.id, "✏️ <b>Modo de Edição</b>\nDigite a leitura correta ou envie a foto corrigida:", parse_mode="HTML")
+            bot.answer_callback_query(call.id, "Aguardando nova leitura...")
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Erro: {str(e)}")
 
 
 if __name__ == "__main__":
