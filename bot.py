@@ -210,7 +210,6 @@ def botao_liguei(message):
     token_atual = token_acao
     
     salvar_log(message.from_user.first_name, "Ligou a água")
-    salvar_na_planilha(message.from_user.first_name, "Ação: LIGOU a água")
     bot.reply_to(
         message, "✅ Você ligou a água! 📸 Mande a foto ou digite a leitura AGORA."
     )
@@ -239,7 +238,6 @@ def botao_desliguei(message):
     token_atual = token_acao
     
     salvar_log(message.from_user.first_name, "Desligou a água")
-    salvar_na_planilha(message.from_user.first_name, "Ação: DESLIGOU a água")
     bot.reply_to(
         message,
         "✅ Você desligou a água! 📸 Mande a leitura para o teste de estanqueidade.",
