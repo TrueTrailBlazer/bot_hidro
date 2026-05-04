@@ -57,7 +57,14 @@ def run_web():
 # --- ESTADOS E VARIÁVEIS GLOBAIS ---
 estado_bot = "ocioso"
 quem_desligou_hoje = None
-horarios_noturnos = ["19:00", "21:00", "23:00"]
+
+def carregar_horarios():
+    if os.path.exists("horarios.txt"):
+        with open("horarios.txt", "r") as f:
+            return f.read().strip().split(",")
+    return ["19:00", "21:00", "23:00"]
+
+horarios_noturnos = carregar_horarios()
 TEXTOS_BOTOES = [
     "🟢 Liguei a Água",
     "🔴 Desliguei a Água",
@@ -265,6 +272,18 @@ def botao_avulso(message):
     bot.reply_to(message, texto, parse_mode="HTML")
 
 
+@bot.message_handler(func=lambda m: m.text and "Configurar Horários" in m.text)
+def botao_configurar(message):
+    global estado_bot
+    estado_bot = "configurando_horarios"
+    texto = (
+        f"🕒 <b>Horários Atuais de Aviso:</b> {', '.join(horarios_noturnos)}\n\n"
+        "Para alterar, digite os novos horários separados por vírgula no formato HH:MM.\n"
+        "<i>Exemplo: 18:30, 20:00, 22:30</i>"
+    )
+    bot.reply_to(message, texto, parse_mode="HTML")
+
+
 def monitorar_esquecimento(acao, usuario, chat_id, token_recebido):
     time.sleep(180)
     global estado_bot, token_acao
@@ -289,12 +308,30 @@ def monitorar_esquecimento(acao, usuario, chat_id, token_recebido):
 # --- PROCESSAMENTO DE DADOS ---
 @bot.message_handler(
     func=lambda m: (
-        estado_bot in ["matinal", "noturno", "avulso", "editando"]
+        estado_bot in ["matinal", "noturno", "avulso", "editando", "configurando_horarios"]
         and m.content_type == "text"
         and m.text not in TEXTOS_BOTOES
     )
 )
 def receber_texto(message):
+    global estado_bot, horarios_noturnos
+    
+    if estado_bot == "configurando_horarios":
+        novos_horarios = re.findall(r"\d{1,2}:\d{2}", message.text)
+        if novos_horarios:
+            horarios_noturnos = novos_horarios
+            with open("horarios.txt", "w") as f:
+                f.write(",".join(novos_horarios))
+            # Reinicia os agendamentos em tempo real
+            schedule.clear()
+            for hora in horarios_noturnos:
+                schedule.every().day.at(hora).do(verificar_e_avisar_noturno)
+            bot.reply_to(message, f"✅ Horários atualizados com sucesso para: {', '.join(novos_horarios)}!")
+            estado_bot = "ocioso"
+        else:
+            bot.reply_to(message, "❌ Formato inválido. Tente novamente usando HH:MM (ex: 18:00, 20:30).")
+        return
+
     # Trata erros comuns de digitação com espaços: "123. 45" ou "123, 45" vira "123,45"
     texto_limpo = re.sub(r'(\d)[\.,]\s+(\d)', r'\1,\2', message.text)
     # Regex para aceitar números inteiros ou com separador decimal (vírgula ou ponto)
