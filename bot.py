@@ -92,7 +92,7 @@ TEXTOS_BOTOES = [
 ]
 
 # Variáveis de controle diário e tokens de concorrência
-controle_diario = {"data": None, "ligar": None, "desligar": None}
+controle_diario = {"data": None, "ligar": None, "hora_ligar": None, "desligar": None, "hora_desligar": None}
 token_acao = 0
 
 
@@ -224,57 +224,77 @@ def start(message):
 # --- HANDLERS DE AÇÃO ---
 @bot.message_handler(func=lambda m: m.text and "Liguei a Água" in m.text)
 def botao_liguei(message):
-    global estado_bot, controle_diario, token_acao
+    global controle_diario
     data_hoje = datetime.now().strftime("%d/%m/%Y")
     
     if controle_diario["data"] != data_hoje:
-        controle_diario = {"data": data_hoje, "ligar": None, "desligar": None}
-        
+        controle_diario = {"data": data_hoje, "ligar": None, "hora_ligar": None, "desligar": None, "hora_desligar": None}
+
     if controle_diario["ligar"]:
-        bot.reply_to(message, f"⚠️ A água já foi ligada hoje por {controle_diario['ligar']}! Se quiser mandar outra leitura, use Leitura Avulsa.")
+        markup = InlineKeyboardMarkup()
+        markup.add(
+            InlineKeyboardButton("✅ Sim, liguei novamente", callback_data="confirmar_ligar"),
+            InlineKeyboardButton("❌ Cancelar", callback_data="cancelar_acao")
+        )
+        bot.reply_to(message, f"⚠️ A água já foi ligada hoje por {controle_diario['ligar']} às {controle_diario['hora_ligar']}!\nTem certeza que deseja registrar outra ligação?", reply_markup=markup)
         return
 
-    controle_diario["ligar"] = message.from_user.first_name
+    executar_ligar(message.chat.id, message.from_user.first_name)
+
+def executar_ligar(chat_id, user_first_name):
+    global estado_bot, controle_diario, token_acao
+    controle_diario["ligar"] = user_first_name
+    controle_diario["hora_ligar"] = datetime.now().strftime("%H:%M")
     estado_bot = "matinal"
     token_acao += 1
     token_atual = token_acao
     
-    salvar_log(message.from_user.first_name, "Ligou a água")
-    bot.reply_to(
-        message, "✅ Você ligou a água! 📸 Mande a foto ou digite a leitura AGORA."
+    salvar_log(user_first_name, "Ligou a água")
+    bot.send_message(
+        chat_id, "✅ Você ligou a água! 📸 Mande a foto ou digite a leitura AGORA."
     )
     threading.Thread(
         target=monitorar_esquecimento,
-        args=("ligar", message.from_user.first_name, message.chat.id, token_atual),
+        args=("ligar", user_first_name, chat_id, token_atual),
     ).start()
 
 
 @bot.message_handler(func=lambda m: m.text and "Desliguei a Água" in m.text)
 def botao_desliguei(message):
-    global estado_bot, quem_desligou_hoje, controle_diario, token_acao
+    global controle_diario
     data_hoje = datetime.now().strftime("%d/%m/%Y")
     
     if controle_diario["data"] != data_hoje:
-        controle_diario = {"data": data_hoje, "ligar": None, "desligar": None}
-        
+        controle_diario = {"data": data_hoje, "ligar": None, "hora_ligar": None, "desligar": None, "hora_desligar": None}
+
     if controle_diario["desligar"]:
-        bot.reply_to(message, f"⚠️ A água já foi desligada hoje por {controle_diario['desligar']}! Se quiser mandar outra leitura, use Leitura Avulsa.")
+        markup = InlineKeyboardMarkup()
+        markup.add(
+            InlineKeyboardButton("✅ Sim, desliguei novamente", callback_data="confirmar_desligar"),
+            InlineKeyboardButton("❌ Cancelar", callback_data="cancelar_acao")
+        )
+        bot.reply_to(message, f"⚠️ A água já foi desligada hoje por {controle_diario['desligar']} às {controle_diario['hora_desligar']}!\nTem certeza que deseja registrar outro desligamento?", reply_markup=markup)
         return
 
-    quem_desligou_hoje = message.from_user.first_name
-    controle_diario["desligar"] = quem_desligou_hoje
+    executar_desligar(message.chat.id, message.from_user.first_name)
+
+def executar_desligar(chat_id, user_first_name):
+    global estado_bot, quem_desligou_hoje, controle_diario, token_acao
+    quem_desligou_hoje = user_first_name
+    controle_diario["desligar"] = user_first_name
+    controle_diario["hora_desligar"] = datetime.now().strftime("%H:%M")
     estado_bot = "noturno"
     token_acao += 1
     token_atual = token_acao
     
-    salvar_log(message.from_user.first_name, "Desligou a água")
-    bot.reply_to(
-        message,
+    salvar_log(user_first_name, "Desligou a água")
+    bot.send_message(
+        chat_id,
         "✅ Você desligou a água! 📸 Mande a leitura para o teste de estanqueidade.",
     )
     threading.Thread(
         target=monitorar_esquecimento,
-        args=("desligar", quem_desligou_hoje, message.chat.id, token_atual),
+        args=("desligar", user_first_name, chat_id, token_atual),
     ).start()
 
 
@@ -481,6 +501,18 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
 def callback_geral(call):
     global estado_bot, horarios_noturnos
     try:
+        if call.data == "confirmar_ligar":
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+            executar_ligar(call.message.chat.id, call.from_user.first_name)
+            return
+        elif call.data == "confirmar_desligar":
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+            executar_desligar(call.message.chat.id, call.from_user.first_name)
+            return
+        elif call.data == "cancelar_acao":
+            bot.edit_message_text("❌ Ação cancelada.", call.message.chat.id, call.message.message_id)
+            return
+
         # --- Lógica Antiga: Leituras ---
         if call.data == "apagar_ultima":
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
