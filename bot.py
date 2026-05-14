@@ -8,7 +8,7 @@ from datetime import datetime
 import gspread
 import requests
 import telebot
-import schedule
+from pytz import timezone
 from dotenv import load_dotenv
 from flask import Flask
 from google.oauth2.service_account import Credentials
@@ -21,11 +21,9 @@ from telebot.types import (
     ReplyKeyboardMarkup,
 )
 
-# --- CONFIGURAÇÃO DE AMBIENTE ---
+# --- CONFIGURAÇÃO DE AMBIENTE E FUSO HORÁRIO ---
 load_dotenv()
-os.environ["TZ"] = "America/Campo_Grande"
-if hasattr(time, "tzset"):
-    time.tzset()
+TZ = timezone("America/Campo_Grande")
 
 # --- VARIÁVEIS SENSÍVEIS (Vindas do .env) ---
 TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -58,7 +56,6 @@ import json
 
 # --- ESTADOS E VARIÁVEIS GLOBAIS ---
 ESTADOS_FILE = "estados.json"
-CONTROLE_FILE = "controle.json"
 TOKENS_FILE = "tokens.json"
 
 def carregar_json(arquivo, default):
@@ -72,9 +69,36 @@ def salvar_json(arquivo, dados):
     with open(arquivo, "w") as f:
         json.dump(dados, f)
 
+def carregar_config(chave, default):
+    try:
+        sheet = conectar_planilha("Config")
+        coluna_chaves = sheet.col_values(1)
+        if chave in coluna_chaves:
+            idx = coluna_chaves.index(chave) + 1
+            valor_str = sheet.cell(idx, 2).value
+            if valor_str:
+                return json.loads(valor_str)
+    except Exception as e:
+        print(f"Aviso: Não foi possível carregar config {chave}: {e}")
+    return default
+
+def salvar_config(chave, dados):
+    try:
+        sheet = conectar_planilha("Config")
+        coluna_chaves = sheet.col_values(1)
+        valor_str = json.dumps(dados)
+        if chave in coluna_chaves:
+            idx = coluna_chaves.index(chave) + 1
+            sheet.update_cell(idx, 2, valor_str)
+        else:
+            sheet.append_row([chave, valor_str])
+    except Exception as e:
+        print(f"Aviso: Não foi possível salvar config {chave}: {e}")
+
 estados_usuarios = carregar_json(ESTADOS_FILE, {})
-controle_diario = carregar_json(CONTROLE_FILE, {"data": None, "ligar": None, "hora_ligar": None, "desligar": None, "hora_desligar": None})
 tokens_acao = carregar_json(TOKENS_FILE, {})
+controle_diario = carregar_config("controle_diario", {"data": None, "ligar": None, "hora_ligar": None, "desligar": None, "hora_desligar": None})
+horarios_noturnos = carregar_config("horarios_noturnos", ["19:00", "21:00", "23:00"])
 
 def get_estado(chat_id):
     return estados_usuarios.get(str(chat_id), "ocioso")
@@ -84,26 +108,13 @@ def set_estado(chat_id, estado):
     salvar_json(ESTADOS_FILE, estados_usuarios)
 
 def salvar_controle():
-    salvar_json(CONTROLE_FILE, controle_diario)
+    salvar_config("controle_diario", controle_diario)
 
 def salvar_tokens():
     salvar_json(TOKENS_FILE, tokens_acao)
 
-def carregar_horarios():
-    if os.path.exists("horarios.txt"):
-        with open("horarios.txt", "r") as f:
-            return f.read().strip().split(",")
-    return ["19:00", "21:00", "23:00"]
-
-horarios_noturnos = carregar_horarios()
-
-def salvar_e_recarregar_horarios():
-    global horarios_noturnos
-    with open("horarios.txt", "w") as f:
-        f.write(",".join(horarios_noturnos))
-    schedule.clear()
-    for hora in horarios_noturnos:
-        schedule.every().day.at(hora).do(verificar_e_avisar_noturno)
+def salvar_horarios():
+    salvar_config("horarios_noturnos", horarios_noturnos)
 
 def gerar_teclado_horarios():
     markup = InlineKeyboardMarkup(row_width=2)
@@ -150,17 +161,21 @@ def conectar_planilha(aba):
     client = gspread.authorize(creds)
     try:
         planilha = client.open(NOME_PLANILHA)
-        return planilha.worksheet(aba)
+        try:
+            return planilha.worksheet(aba)
+        except gspread.exceptions.WorksheetNotFound:
+            if aba == "Config":
+                planilha.add_worksheet(title="Config", rows=10, cols=2)
+                return planilha.worksheet("Config")
+            raise Exception(f"A aba '{aba}' não foi encontrada dentro da planilha.")
     except gspread.exceptions.SpreadsheetNotFound:
         raise Exception(f"A planilha '{NOME_PLANILHA}' não foi encontrada ou o e-mail do bot (service account) não tem permissão de Editor nela.")
-    except gspread.exceptions.WorksheetNotFound:
-        raise Exception(f"A aba '{aba}' não foi encontrada dentro da planilha.")
 
 
 def salvar_na_planilha(quem, leitura):
     sheet = conectar_planilha("Dados")
-    data_atual = datetime.now().strftime("%d/%m/%Y")
-    hora_atual = datetime.now().strftime("%H:%M:%S")
+    data_atual = datetime.now(TZ).strftime("%d/%m/%Y")
+    hora_atual = datetime.now(TZ).strftime("%H:%M:%S")
     
     # Tenta converter para float para que o gspread envie como número JSON
     try:
@@ -176,8 +191,8 @@ def salvar_na_planilha(quem, leitura):
 def salvar_log(quem, acao):
     try:
         sheet_logs = conectar_planilha("Logs")
-        data_atual = datetime.now().strftime("%d/%m/%Y")
-        hora_atual = datetime.now().strftime("%H:%M:%S")
+        data_atual = datetime.now(TZ).strftime("%d/%m/%Y")
+        hora_atual = datetime.now(TZ).strftime("%H:%M:%S")
         sheet_logs.append_row([data_atual, hora_atual, quem, acao], table_range="A:D")
         return True
     except Exception as e:
@@ -264,7 +279,7 @@ def start(message):
 # --- HANDLERS DE AÇÃO ---
 @bot.message_handler(func=lambda m: m.text and "Liguei a Água" in m.text, is_authorized=True)
 def botao_liguei(message):
-    data_hoje = datetime.now().strftime("%d/%m/%Y")
+    data_hoje = datetime.now(TZ).strftime("%d/%m/%Y")
     
     if controle_diario["data"] != data_hoje:
         controle_diario.update({"data": data_hoje, "ligar": None, "hora_ligar": None, "desligar": None, "hora_desligar": None})
@@ -283,7 +298,7 @@ def botao_liguei(message):
 
 def executar_ligar(chat_id, user_first_name):
     controle_diario["ligar"] = user_first_name
-    controle_diario["hora_ligar"] = datetime.now().strftime("%H:%M")
+    controle_diario["hora_ligar"] = datetime.now(TZ).strftime("%H:%M")
     salvar_controle()
     set_estado(chat_id, "matinal")
     
@@ -303,7 +318,7 @@ def executar_ligar(chat_id, user_first_name):
 
 @bot.message_handler(func=lambda m: m.text and "Desliguei a Água" in m.text, is_authorized=True)
 def botao_desliguei(message):
-    data_hoje = datetime.now().strftime("%d/%m/%Y")
+    data_hoje = datetime.now(TZ).strftime("%d/%m/%Y")
     
     if controle_diario["data"] != data_hoje:
         controle_diario.update({"data": data_hoje, "ligar": None, "hora_ligar": None, "desligar": None, "hora_desligar": None})
@@ -322,7 +337,7 @@ def botao_desliguei(message):
 
 def executar_desligar(chat_id, user_first_name):
     controle_diario["desligar"] = user_first_name
-    controle_diario["hora_desligar"] = datetime.now().strftime("%H:%M")
+    controle_diario["hora_desligar"] = datetime.now(TZ).strftime("%H:%M")
     salvar_controle()
     set_estado(chat_id, "noturno")
     
@@ -403,7 +418,7 @@ def receber_texto(message):
             if novo not in horarios_noturnos:
                 horarios_noturnos.append(novo)
                 horarios_noturnos.sort()
-                salvar_e_recarregar_horarios()
+                salvar_horarios()
                 bot.reply_to(message, f"✅ Horário {novo} adicionado!", reply_markup=gerar_teclado_horarios())
             else:
                 bot.reply_to(message, "❌ Esse horário já existe.")
@@ -421,7 +436,7 @@ def receber_texto(message):
                 idx = horarios_noturnos.index(velho)
                 horarios_noturnos[idx] = novo
                 horarios_noturnos.sort()
-                salvar_e_recarregar_horarios()
+                salvar_horarios()
                 bot.reply_to(message, f"✅ Horário alterado de {velho} para {novo}!", reply_markup=gerar_teclado_horarios())
             set_estado(chat_id, "ocioso")
         else:
@@ -606,7 +621,7 @@ def callback_geral(call):
             hora = call.data.split("_")[2]
             if hora in horarios_noturnos:
                 horarios_noturnos.remove(hora)
-                salvar_e_recarregar_horarios()
+                salvar_horarios()
                 bot.answer_callback_query(call.id, f"Horário {hora} apagado!")
                 bot.edit_message_text(
                     "🕒 <b>Painel de Horários de Aviso</b>\n\nSelecione um horário para gerenciar ou adicione um novo:", 
@@ -631,7 +646,7 @@ def callback_geral(call):
 
 # --- AGENDAMENTO DE LEMBRETES (Sincronizado com controle_diario) ---
 def verificar_e_avisar_noturno():
-    data_hoje = datetime.now().strftime("%d/%m/%Y")
+    data_hoje = datetime.now(TZ).strftime("%d/%m/%Y")
     
     # Se ainda não desligaram hoje (ou a data virou e não resetou)
     if controle_diario["data"] != data_hoje or not controle_diario["desligar"]:
@@ -644,13 +659,13 @@ def verificar_e_avisar_noturno():
                 pass
 
 def run_scheduler():
-    # Configura os horários baseados na variável global
-    for hora in horarios_noturnos:
-        schedule.every().day.at(hora).do(verificar_e_avisar_noturno)
-    
     while True:
-        schedule.run_pending()
-        time.sleep(60)
+        agora = datetime.now(TZ).strftime("%H:%M")
+        if agora in horarios_noturnos:
+            verificar_e_avisar_noturno()
+            time.sleep(61)
+        else:
+            time.sleep(30)
 
 
 # --- HANDLERS DE ACESSO NEGADO ---
