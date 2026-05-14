@@ -27,7 +27,7 @@ O bot depende de uma variável global `estado_bot` para evitar colisões e falso
 Sempre que um usuário inicia uma ação ("Ligar" ou "Desligar"), uma Thread paralela é disparada esperando 3 minutos (`time.sleep(180)`). Se após esse tempo o `estado_bot` ainda for o mesmo (ou seja, a leitura não entrou no estado `'processando'`), o bot dedura o usuário no grupo da família e salva a falha na aba de Logs. **Nunca trave a thread principal (main thread) com `time.sleep`.**
 
 ### 3. Conexão com Google Sheets (Trava de Colunas)
-As leituras são salvas na planilha "Monitoramento Agua", aba "Dados" ou "Logs". 
+As leituras são salvas na planilha "Monitoramento", aba "Dados" ou "Logs". 
 - **CRÍTICO:** A função `append_row` DEVE SEMPRE usar o parâmetro `table_range="A:D"`. Existe um painel visual a partir da coluna J na aba "Dados". Se o `table_range` for removido, o `gspread` fará o append das novas leituras no final do painel (linha 10+), quebrando a estrutura de dados.
 
 ### 4. Tratamento de Imagens (OCR)

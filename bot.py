@@ -31,7 +31,7 @@ if hasattr(time, "tzset"):
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 OCR_API_KEY = os.getenv("OCR_API_KEY")
 MEU_CHAT_ID = os.getenv("MEU_CHAT_ID")
-NOME_PLANILHA = os.getenv("NOME_PLANILHA", "Monitoramento Agua")
+NOME_PLANILHA = os.getenv("NOME_PLANILHA", "Monitoramento")
 
 CONTATOS_FAMILIA = {
     "Mãe": os.getenv("ID_MAE"),
@@ -119,7 +119,13 @@ def conectar_planilha(aba):
 
     creds = ServiceAccountCredentials.from_json_keyfile_name(path_final, scope)
     client = gspread.authorize(creds)
-    return client.open(NOME_PLANILHA).worksheet(aba)
+    try:
+        planilha = client.open(NOME_PLANILHA)
+        return planilha.worksheet(aba)
+    except gspread.exceptions.SpreadsheetNotFound:
+        raise Exception(f"A planilha '{NOME_PLANILHA}' não foi encontrada ou o e-mail do bot (service account) não tem permissão de Editor nela.")
+    except gspread.exceptions.WorksheetNotFound:
+        raise Exception(f"A aba '{aba}' não foi encontrada dentro da planilha.")
 
 
 def salvar_na_planilha(quem, leitura):
