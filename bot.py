@@ -54,9 +54,40 @@ def run_web():
     app.run(host="0.0.0.0", port=port)
 
 
+import json
+
 # --- ESTADOS E VARIÁVEIS GLOBAIS ---
-estado_bot = "ocioso"
-quem_desligou_hoje = None
+ESTADOS_FILE = "estados.json"
+CONTROLE_FILE = "controle.json"
+TOKENS_FILE = "tokens.json"
+
+def carregar_json(arquivo, default):
+    try:
+        with open(arquivo, "r") as f:
+            return json.load(f)
+    except:
+        return default
+
+def salvar_json(arquivo, dados):
+    with open(arquivo, "w") as f:
+        json.dump(dados, f)
+
+estados_usuarios = carregar_json(ESTADOS_FILE, {})
+controle_diario = carregar_json(CONTROLE_FILE, {"data": None, "ligar": None, "hora_ligar": None, "desligar": None, "hora_desligar": None})
+tokens_acao = carregar_json(TOKENS_FILE, {})
+
+def get_estado(chat_id):
+    return estados_usuarios.get(str(chat_id), "ocioso")
+
+def set_estado(chat_id, estado):
+    estados_usuarios[str(chat_id)] = estado
+    salvar_json(ESTADOS_FILE, estados_usuarios)
+
+def salvar_controle():
+    salvar_json(CONTROLE_FILE, controle_diario)
+
+def salvar_tokens():
+    salvar_json(TOKENS_FILE, tokens_acao)
 
 def carregar_horarios():
     if os.path.exists("horarios.txt"):
@@ -91,9 +122,7 @@ TEXTOS_BOTOES = [
     "🕒 Configurar Horários",
 ]
 
-# Variáveis de controle diário e tokens de concorrência
-controle_diario = {"data": None, "ligar": None, "hora_ligar": None, "desligar": None, "hora_desligar": None}
-token_acao = 0
+# Removidas as antigas variáveis globais de controle para usar as persistidas em JSON
 
 
 # --- CONEXÃO E SALVAMENTO (GOOGLE SHEETS) ---
@@ -208,8 +237,7 @@ def teclado_principal():
 
 @bot.message_handler(commands=["cancelar"], is_authorized=True)
 def comando_cancelar(message):
-    global estado_bot
-    estado_bot = "ocioso"
+    set_estado(message.chat.id, "ocioso")
     bot.send_message(message.chat.id, "❌ Ação cancelada.", reply_markup=teclado_principal())
 
 @bot.message_handler(commands=["start"], is_authorized=True)
@@ -236,11 +264,11 @@ def start(message):
 # --- HANDLERS DE AÇÃO ---
 @bot.message_handler(func=lambda m: m.text and "Liguei a Água" in m.text, is_authorized=True)
 def botao_liguei(message):
-    global controle_diario
     data_hoje = datetime.now().strftime("%d/%m/%Y")
     
     if controle_diario["data"] != data_hoje:
-        controle_diario = {"data": data_hoje, "ligar": None, "hora_ligar": None, "desligar": None, "hora_desligar": None}
+        controle_diario.update({"data": data_hoje, "ligar": None, "hora_ligar": None, "desligar": None, "hora_desligar": None})
+        salvar_controle()
 
     if controle_diario["ligar"]:
         markup = InlineKeyboardMarkup()
@@ -254,12 +282,14 @@ def botao_liguei(message):
     executar_ligar(message.chat.id, message.from_user.first_name)
 
 def executar_ligar(chat_id, user_first_name):
-    global estado_bot, controle_diario, token_acao
     controle_diario["ligar"] = user_first_name
     controle_diario["hora_ligar"] = datetime.now().strftime("%H:%M")
-    estado_bot = "matinal"
-    token_acao += 1
-    token_atual = token_acao
+    salvar_controle()
+    set_estado(chat_id, "matinal")
+    
+    token_atual = tokens_acao.get(str(chat_id), 0) + 1
+    tokens_acao[str(chat_id)] = token_atual
+    salvar_tokens()
     
     salvar_log(user_first_name, "Ligou a água")
     bot.send_message(
@@ -273,11 +303,11 @@ def executar_ligar(chat_id, user_first_name):
 
 @bot.message_handler(func=lambda m: m.text and "Desliguei a Água" in m.text, is_authorized=True)
 def botao_desliguei(message):
-    global controle_diario
     data_hoje = datetime.now().strftime("%d/%m/%Y")
     
     if controle_diario["data"] != data_hoje:
-        controle_diario = {"data": data_hoje, "ligar": None, "hora_ligar": None, "desligar": None, "hora_desligar": None}
+        controle_diario.update({"data": data_hoje, "ligar": None, "hora_ligar": None, "desligar": None, "hora_desligar": None})
+        salvar_controle()
 
     if controle_diario["desligar"]:
         markup = InlineKeyboardMarkup()
@@ -291,13 +321,14 @@ def botao_desliguei(message):
     executar_desligar(message.chat.id, message.from_user.first_name)
 
 def executar_desligar(chat_id, user_first_name):
-    global estado_bot, quem_desligou_hoje, controle_diario, token_acao
-    quem_desligou_hoje = user_first_name
     controle_diario["desligar"] = user_first_name
     controle_diario["hora_desligar"] = datetime.now().strftime("%H:%M")
-    estado_bot = "noturno"
-    token_acao += 1
-    token_atual = token_acao
+    salvar_controle()
+    set_estado(chat_id, "noturno")
+    
+    token_atual = tokens_acao.get(str(chat_id), 0) + 1
+    tokens_acao[str(chat_id)] = token_atual
+    salvar_tokens()
     
     salvar_log(user_first_name, "Desligou a água")
     bot.send_message(
@@ -312,8 +343,7 @@ def executar_desligar(chat_id, user_first_name):
 
 @bot.message_handler(func=lambda m: m.text and "Leitura Avulsa" in m.text, is_authorized=True)
 def botao_avulso(message):
-    global estado_bot
-    estado_bot = "avulso"
+    set_estado(message.chat.id, "avulso")
     texto = (
         "📸 <b>Modo de Leitura Avulsa ativado!</b>\n"
         "Você pode mandar uma foto nítida do hidrômetro agora ou digitar a leitura manualmente.\n\n"
@@ -325,22 +355,22 @@ def botao_avulso(message):
 
 @bot.message_handler(func=lambda m: m.text and "Configurar Horários" in m.text, is_authorized=True)
 def botao_configurar(message):
-    global estado_bot
-    estado_bot = "ocioso"
+    set_estado(message.chat.id, "ocioso")
     texto = "🕒 <b>Painel de Horários de Aviso</b>\n\nSelecione um horário para gerenciar ou adicione um novo:"
     bot.send_message(message.chat.id, texto, parse_mode="HTML", reply_markup=gerar_teclado_horarios())
 
 
 def monitorar_esquecimento(acao, usuario, chat_id, token_recebido):
     time.sleep(180)
-    global estado_bot, token_acao
-    if token_recebido != token_acao:
+    token_acao_atual = tokens_acao.get(str(chat_id), 0)
+    if token_recebido != token_acao_atual:
         return # Ação obsoleta
         
+    estado_bot = get_estado(chat_id)
     if (acao == "ligar" and estado_bot == "matinal") or (
         acao == "desligar" and estado_bot == "noturno"
     ):
-        estado_bot = "ocioso"
+        set_estado(chat_id, "ocioso")
         salvar_log(usuario, f"🚨 Esqueceu de anotar a leitura após {acao}.")
         verbo = "ligou" if acao == "ligar" else "desligou"
         for cid in list(CONTATOS_FAMILIA.values()) + [MEU_CHAT_ID]:
@@ -355,14 +385,16 @@ def monitorar_esquecimento(acao, usuario, chat_id, token_recebido):
 # --- PROCESSAMENTO DE DADOS ---
 @bot.message_handler(
     func=lambda m: (
-        (estado_bot in ["matinal", "noturno", "avulso", "editando", "add_horario_wait"] or str(estado_bot).startswith("edit_horario_wait_"))
+        (get_estado(m.chat.id) in ["matinal", "noturno", "avulso", "editando", "add_horario_wait"] or str(get_estado(m.chat.id)).startswith("edit_horario_wait_"))
         and m.content_type == "text"
         and m.text not in TEXTOS_BOTOES
     ),
     is_authorized=True
 )
 def receber_texto(message):
-    global estado_bot, horarios_noturnos
+    global horarios_noturnos
+    chat_id = message.chat.id
+    estado_bot = get_estado(chat_id)
     
     if estado_bot == "add_horario_wait":
         match = re.findall(r"\d{1,2}:\d{2}", message.text)
@@ -375,7 +407,7 @@ def receber_texto(message):
                 bot.reply_to(message, f"✅ Horário {novo} adicionado!", reply_markup=gerar_teclado_horarios())
             else:
                 bot.reply_to(message, "❌ Esse horário já existe.")
-            estado_bot = "ocioso"
+            set_estado(chat_id, "ocioso")
         else:
             bot.reply_to(message, "❌ Formato inválido. Tente novamente usando HH:MM.")
         return
@@ -391,7 +423,7 @@ def receber_texto(message):
                 horarios_noturnos.sort()
                 salvar_e_recarregar_horarios()
                 bot.reply_to(message, f"✅ Horário alterado de {velho} para {novo}!", reply_markup=gerar_teclado_horarios())
-            estado_bot = "ocioso"
+            set_estado(chat_id, "ocioso")
         else:
             bot.reply_to(message, "❌ Formato inválido. Tente novamente usando HH:MM.")
         return
@@ -410,6 +442,8 @@ def receber_texto(message):
 
 @bot.message_handler(content_types=["photo"], is_authorized=True)
 def receber_foto(message):
+    chat_id = message.chat.id
+    estado_bot = get_estado(chat_id)
     if estado_bot in ["matinal", "noturno", "avulso", "editando"]:
         msg_wait = bot.reply_to(message, "⏳ Processando imagem...")
         file_info = bot.get_file(message.photo[-1].file_id)
@@ -443,9 +477,9 @@ def receber_foto(message):
 
 
 def processar_leitura(message, leitura_bruta, msg_wait=None):
-    global estado_bot
-    est_ant = estado_bot
-    estado_bot = "processando"
+    chat_id = message.chat.id
+    est_ant = get_estado(chat_id)
+    set_estado(chat_id, "processando")
     if not msg_wait:
         msg_wait = bot.reply_to(message, "⏳ Salvando...")
 
@@ -508,11 +542,12 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
                 message.chat.id,
                 msg_wait.message_id,
             )
-    estado_bot = "ocioso"
+    set_estado(chat_id, "ocioso")
 
 @bot.callback_query_handler(func=lambda call: True, is_authorized=True)
 def callback_geral(call):
-    global estado_bot, horarios_noturnos
+    global horarios_noturnos
+    chat_id = call.message.chat.id
     try:
         if call.data == "confirmar_ligar":
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
@@ -539,7 +574,7 @@ def callback_geral(call):
             else:
                 bot.answer_callback_query(call.id, "Nenhuma leitura encontrada para apagar.")
         elif call.data == "editar_ultima":
-            estado_bot = "editando"
+            set_estado(chat_id, "editando")
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
             bot.send_message(call.message.chat.id, "✏️ <b>Modo de Edição</b>\nDigite a leitura correta ou envie a foto corrigida (ou digite /cancelar para sair):", parse_mode="HTML")
             bot.answer_callback_query(call.id, "Aguardando nova leitura...")
@@ -582,12 +617,12 @@ def callback_geral(call):
                 )
                 
         elif call.data == "add_hora":
-            estado_bot = "add_horario_wait"
+            set_estado(chat_id, "add_horario_wait")
             bot.edit_message_text("➕ Digite o novo horário no formato HH:MM (ex: 18:30) ou envie /cancelar para desistir:", call.message.chat.id, call.message.message_id)
             
         elif call.data.startswith("edit_hora_"):
             hora = call.data.split("_")[2]
-            estado_bot = f"edit_horario_wait_{hora}"
+            set_estado(chat_id, f"edit_horario_wait_{hora}")
             bot.edit_message_text(f"✏️ Digite o novo valor para o horário {hora} (ex: 19:30) ou envie /cancelar para desistir:", call.message.chat.id, call.message.message_id)
             
     except Exception as e:
@@ -596,7 +631,6 @@ def callback_geral(call):
 
 # --- AGENDAMENTO DE LEMBRETES (Sincronizado com controle_diario) ---
 def verificar_e_avisar_noturno():
-    global controle_diario
     data_hoje = datetime.now().strftime("%d/%m/%Y")
     
     # Se ainda não desligaram hoje (ou a data virou e não resetou)

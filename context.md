@@ -16,8 +16,8 @@ Este é um bot de Telegram desenvolvido em Python para uso familiar. Seu objetiv
 ## 🏗️ Arquitetura e Decisões Críticas do Sistema
 Ao modificar ou adicionar código a este projeto, RESPEITE estritamente as seguintes regras de arquitetura:
 
-### 1. Máquina de Estados (`estado_bot`)
-O bot depende de uma variável global `estado_bot` para evitar colisões e falsos positivos. Os estados são:
+### 1. Máquina de Estados e Persistência
+Para evitar conflitos quando múltiplas pessoas usam o bot simultaneamente, o sistema armazena o estado individualmente por usuário no disco (`estados.json`). O controle diário de quem ligou/desligou a água também é persistido em `controle.json`, garantindo que o bot não perca a memória se o Render reiniciar. Os principais estados são:
 - `'ocioso'`: Estado padrão. O bot ignora fotos ou textos numéricos soltos para evitar spam.
 - `'matinal'`: Ativado ao clicar em "Liguei a Água". Aguarda a leitura para calcular o consumo diário.
 - `'noturno'`: Ativado ao clicar em "Desliguei a Água". Aguarda a leitura para marcar o teste de estanqueidade.
