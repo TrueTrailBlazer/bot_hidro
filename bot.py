@@ -11,7 +11,7 @@ import telebot
 import schedule
 from dotenv import load_dotenv
 from flask import Flask
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from telebot import apihelper
 from telebot.types import (
@@ -117,7 +117,7 @@ def conectar_planilha(aba):
             "Arquivo credentials.json não encontrado em nenhum local conhecido."
         )
 
-    creds = ServiceAccountCredentials.from_json_keyfile_name(path_final, scope)
+    creds = Credentials.from_service_account_file(path_final, scopes=scope)
     client = gspread.authorize(creds)
     try:
         planilha = client.open(NOME_PLANILHA)
@@ -206,7 +206,13 @@ def teclado_principal():
     return markup
 
 
-@bot.message_handler(commands=["start"])
+@bot.message_handler(commands=["cancelar"], is_authorized=True)
+def comando_cancelar(message):
+    global estado_bot
+    estado_bot = "ocioso"
+    bot.send_message(message.chat.id, "❌ Ação cancelada.", reply_markup=teclado_principal())
+
+@bot.message_handler(commands=["start"], is_authorized=True)
 def start(message):
     bot.send_message(
         message.chat.id,
@@ -228,7 +234,7 @@ def start(message):
 
 
 # --- HANDLERS DE AÇÃO ---
-@bot.message_handler(func=lambda m: m.text and "Liguei a Água" in m.text)
+@bot.message_handler(func=lambda m: m.text and "Liguei a Água" in m.text, is_authorized=True)
 def botao_liguei(message):
     global controle_diario
     data_hoje = datetime.now().strftime("%d/%m/%Y")
@@ -265,7 +271,7 @@ def executar_ligar(chat_id, user_first_name):
     ).start()
 
 
-@bot.message_handler(func=lambda m: m.text and "Desliguei a Água" in m.text)
+@bot.message_handler(func=lambda m: m.text and "Desliguei a Água" in m.text, is_authorized=True)
 def botao_desliguei(message):
     global controle_diario
     data_hoje = datetime.now().strftime("%d/%m/%Y")
@@ -304,7 +310,7 @@ def executar_desligar(chat_id, user_first_name):
     ).start()
 
 
-@bot.message_handler(func=lambda m: m.text and "Leitura Avulsa" in m.text)
+@bot.message_handler(func=lambda m: m.text and "Leitura Avulsa" in m.text, is_authorized=True)
 def botao_avulso(message):
     global estado_bot
     estado_bot = "avulso"
@@ -317,7 +323,7 @@ def botao_avulso(message):
     bot.reply_to(message, texto, parse_mode="HTML")
 
 
-@bot.message_handler(func=lambda m: m.text and "Configurar Horários" in m.text)
+@bot.message_handler(func=lambda m: m.text and "Configurar Horários" in m.text, is_authorized=True)
 def botao_configurar(message):
     global estado_bot
     estado_bot = "ocioso"
@@ -352,7 +358,8 @@ def monitorar_esquecimento(acao, usuario, chat_id, token_recebido):
         (estado_bot in ["matinal", "noturno", "avulso", "editando", "add_horario_wait"] or str(estado_bot).startswith("edit_horario_wait_"))
         and m.content_type == "text"
         and m.text not in TEXTOS_BOTOES
-    )
+    ),
+    is_authorized=True
 )
 def receber_texto(message):
     global estado_bot, horarios_noturnos
@@ -401,7 +408,7 @@ def receber_texto(message):
         )
 
 
-@bot.message_handler(content_types=["photo"])
+@bot.message_handler(content_types=["photo"], is_authorized=True)
 def receber_foto(message):
     if estado_bot in ["matinal", "noturno", "avulso", "editando"]:
         msg_wait = bot.reply_to(message, "⏳ Processando imagem...")
@@ -503,7 +510,7 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
             )
     estado_bot = "ocioso"
 
-@bot.callback_query_handler(func=lambda call: True)
+@bot.callback_query_handler(func=lambda call: True, is_authorized=True)
 def callback_geral(call):
     global estado_bot, horarios_noturnos
     try:
@@ -534,7 +541,7 @@ def callback_geral(call):
         elif call.data == "editar_ultima":
             estado_bot = "editando"
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-            bot.send_message(call.message.chat.id, "✏️ <b>Modo de Edição</b>\nDigite a leitura correta ou envie a foto corrigida:", parse_mode="HTML")
+            bot.send_message(call.message.chat.id, "✏️ <b>Modo de Edição</b>\nDigite a leitura correta ou envie a foto corrigida (ou digite /cancelar para sair):", parse_mode="HTML")
             bot.answer_callback_query(call.id, "Aguardando nova leitura...")
             
         # --- Lógica Nova: Painel de Horários ---
@@ -576,12 +583,12 @@ def callback_geral(call):
                 
         elif call.data == "add_hora":
             estado_bot = "add_horario_wait"
-            bot.edit_message_text("➕ Digite o novo horário no formato HH:MM (ex: 18:30):", call.message.chat.id, call.message.message_id)
+            bot.edit_message_text("➕ Digite o novo horário no formato HH:MM (ex: 18:30) ou envie /cancelar para desistir:", call.message.chat.id, call.message.message_id)
             
         elif call.data.startswith("edit_hora_"):
             hora = call.data.split("_")[2]
             estado_bot = f"edit_horario_wait_{hora}"
-            bot.edit_message_text(f"✏️ Digite o novo valor para o horário {hora} (ex: 19:30):", call.message.chat.id, call.message.message_id)
+            bot.edit_message_text(f"✏️ Digite o novo valor para o horário {hora} (ex: 19:30) ou envie /cancelar para desistir:", call.message.chat.id, call.message.message_id)
             
     except Exception as e:
         bot.answer_callback_query(call.id, f"Erro: {str(e)}")
@@ -612,7 +619,35 @@ def run_scheduler():
         time.sleep(60)
 
 
+# --- HANDLERS DE ACESSO NEGADO ---
+@bot.message_handler(is_authorized=False)
+def acesso_negado(message):
+    bot.reply_to(message, "🚫 Acesso Negado. Você não está autorizado a usar este bot.")
+
+@bot.callback_query_handler(func=lambda call: True, is_authorized=False)
+def callback_acesso_negado(call):
+    bot.answer_callback_query(call.id, "🚫 Acesso Negado.")
+
+# --- FILTRO CUSTOMIZADO E EXECUÇÃO ---
+class IsAuthorizedFilter(telebot.custom_filters.SimpleCustomFilter):
+    key = 'is_authorized'
+    @staticmethod
+    def check(update):
+        allowed = [str(v) for v in CONTATOS_FAMILIA.values() if v]
+        if MEU_CHAT_ID:
+            allowed.append(str(MEU_CHAT_ID))
+        
+        if type(update) == telebot.types.Message:
+            chat_id = str(update.chat.id)
+        elif type(update) == telebot.types.CallbackQuery:
+            chat_id = str(update.message.chat.id)
+        else:
+            return False
+            
+        return chat_id in allowed
+
 if __name__ == "__main__":
+    bot.add_custom_filter(IsAuthorizedFilter())
     # Inicia Web Server para Keep-Alive
     threading.Thread(target=run_web, daemon=True).start()
     # Inicia Scheduler de lembretes noturnos

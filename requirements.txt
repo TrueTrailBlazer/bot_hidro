@@ -1,6 +1,6 @@
 pyTelegramBotAPI
 gspread
-oauth2client
+google-auth
 Pillow
 requests
 python-dotenv
