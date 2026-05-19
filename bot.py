@@ -52,6 +52,42 @@ def run_web():
     app.run(host="0.0.0.0", port=port)
 
 
+# --- CONEXÃO E SALVAMENTO (GOOGLE SHEETS) ---
+def conectar_planilha(aba):
+    scope = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+    # Tenta achar o arquivo em locais comuns do Render ou local
+    caminhos_tentar = ["credentials.json", "/etc/secrets/credentials.json"]
+    path_final = None
+
+    for p in caminhos_tentar:
+        if os.path.exists(p):
+            path_final = p
+            break
+
+    if not path_final:
+        raise FileNotFoundError(
+            "Arquivo credentials.json não encontrado em nenhum local conhecido."
+        )
+
+    creds = Credentials.from_service_account_file(path_final, scopes=scope)
+    client = gspread.authorize(creds)
+    try:
+        planilha = client.open(NOME_PLANILHA)
+        try:
+            return planilha.worksheet(aba)
+        except gspread.exceptions.WorksheetNotFound:
+            if aba == "Config":
+                planilha.add_worksheet(title="Config", rows=10, cols=2)
+                return planilha.worksheet("Config")
+            raise Exception(f"A aba '{aba}' não foi encontrada dentro da planilha.")
+    except gspread.exceptions.SpreadsheetNotFound:
+        raise Exception(f"A planilha '{NOME_PLANILHA}' não foi encontrada ou o e-mail do bot (service account) não tem permissão de Editor nela.")
+
+
 import json
 
 # --- ESTADOS E VARIÁVEIS GLOBAIS ---
@@ -142,42 +178,6 @@ TEXTOS_BOTOES = [
 ]
 
 # Removidas as antigas variáveis globais de controle para usar as persistidas em JSON
-
-
-# --- CONEXÃO E SALVAMENTO (GOOGLE SHEETS) ---
-def conectar_planilha(aba):
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive",
-    ]
-
-    # Tenta achar o arquivo em locais comuns do Render ou local
-    caminhos_tentar = ["credentials.json", "/etc/secrets/credentials.json"]
-    path_final = None
-
-    for p in caminhos_tentar:
-        if os.path.exists(p):
-            path_final = p
-            break
-
-    if not path_final:
-        raise FileNotFoundError(
-            "Arquivo credentials.json não encontrado em nenhum local conhecido."
-        )
-
-    creds = Credentials.from_service_account_file(path_final, scopes=scope)
-    client = gspread.authorize(creds)
-    try:
-        planilha = client.open(NOME_PLANILHA)
-        try:
-            return planilha.worksheet(aba)
-        except gspread.exceptions.WorksheetNotFound:
-            if aba == "Config":
-                planilha.add_worksheet(title="Config", rows=10, cols=2)
-                return planilha.worksheet("Config")
-            raise Exception(f"A aba '{aba}' não foi encontrada dentro da planilha.")
-    except gspread.exceptions.SpreadsheetNotFound:
-        raise Exception(f"A planilha '{NOME_PLANILHA}' não foi encontrada ou o e-mail do bot (service account) não tem permissão de Editor nela.")
 
 
 def salvar_na_planilha(quem, leitura):
