@@ -99,6 +99,14 @@ estados_usuarios = carregar_json(ESTADOS_FILE, {})
 tokens_acao = carregar_json(TOKENS_FILE, {})
 controle_diario = carregar_config("controle_diario", {"data": None, "ligar": None, "hora_ligar": None, "desligar": None, "hora_desligar": None})
 horarios_noturnos = carregar_config("horarios_noturnos", ["19:00", "21:00", "23:00"])
+ultimo_registro = carregar_config("ultimo_registro", {"acao": None, "timestamp": None, "quem": None, "leitura": None})
+
+def atualizar_ultimo_registro(acao, quem, leitura):
+    ultimo_registro["acao"] = acao
+    ultimo_registro["timestamp"] = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+    ultimo_registro["quem"] = quem
+    ultimo_registro["leitura"] = leitura
+    salvar_config("ultimo_registro", ultimo_registro)
 
 def get_estado(chat_id):
     return estados_usuarios.get(str(chat_id), "ocioso")
@@ -359,8 +367,27 @@ def executar_desligar(chat_id, user_first_name):
 @bot.message_handler(func=lambda m: m.text and "Leitura Avulsa" in m.text, is_authorized=True)
 def botao_avulso(message):
     set_estado(message.chat.id, "avulso")
+    
+    info_extra = ""
+    if ultimo_registro.get("acao"):
+        try:
+            acao = ultimo_registro["acao"]
+            quem = ultimo_registro["quem"]
+            fmt = "%Y-%m-%d %H:%M:%S"
+            data_hora = datetime.strptime(ultimo_registro["timestamp"], fmt)
+            agora = datetime.now(TZ).replace(tzinfo=None)
+            diff = agora - data_hora
+            horas = diff.total_seconds() // 3600
+            minutos = (diff.total_seconds() % 3600) // 60
+            tempo_str = f"{int(horas)}h e {int(minutos)}m"
+            hora_str = data_hora.strftime("%H:%M de %d/%m")
+            info_extra = f"\n\n📊 <b>Último Registro:</b>\n{acao} por {quem} às {hora_str} (há {tempo_str})."
+        except:
+            pass
+
     texto = (
-        "📸 <b>Modo de Leitura Avulsa ativado!</b>\n"
+        "📸 <b>Modo de Leitura Avulsa ativado!</b>"
+        f"{info_extra}\n\n"
         "Você pode mandar uma foto nítida do hidrômetro agora ou digitar a leitura manualmente.\n\n"
         "Se for digitar, separe os números pretos (m³) dos vermelhos (litros) por vírgula. "
         "Ex: se o visor mostra ⚫459 e 🔴123, digite: <code>459,123</code>"
@@ -400,7 +427,7 @@ def monitorar_esquecimento(acao, usuario, chat_id, token_recebido):
 # --- PROCESSAMENTO DE DADOS ---
 @bot.message_handler(
     func=lambda m: (
-        (get_estado(m.chat.id) in ["matinal", "noturno", "avulso", "editando", "add_horario_wait"] or str(get_estado(m.chat.id)).startswith("edit_horario_wait_"))
+        (get_estado(m.chat.id) in ["matinal", "noturno", "avulso", "editando", "add_horario_wait"] or str(get_estado(m.chat.id)).startswith("edit_horario_wait_") or str(get_estado(m.chat.id)).startswith("aguardando_estimativa"))
         and m.content_type == "text"
         and m.text not in TEXTOS_BOTOES
     ),
@@ -411,6 +438,18 @@ def receber_texto(message):
     chat_id = message.chat.id
     estado_bot = get_estado(chat_id)
     
+    if str(estado_bot).startswith("aguardando_estimativa"):
+        if message.text.lower() == "/pular":
+            bot.reply_to(message, "Estimativa ignorada.")
+        else:
+            partes = str(estado_bot).split("_", 3)
+            gasto = partes[2] if len(partes) > 2 else "desconhecido"
+            hora_antiga = partes[3] if len(partes) > 3 else "desconhecido"
+            salvar_log(message.from_user.first_name, f"Estimativa Avulsa: {message.text} de uso (Gasto: {gasto} desde {hora_antiga})")
+            bot.reply_to(message, "✅ Estimativa registrada na planilha de Logs!")
+        set_estado(chat_id, "ocioso")
+        return
+
     if estado_bot == "add_horario_wait":
         match = re.findall(r"\d{1,2}:\d{2}", message.text)
         if match:
@@ -509,13 +548,47 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
     )
 
     # Função auxiliar para editar a mensagem final incluindo o nome e os botões
-    def msg_sucesso(texto_base):
+    def msg_sucesso(texto_base, extra_text=""):
         bot.edit_message_text(
-            f"{texto_base} salva por {message.from_user.first_name}!",
+            f"{texto_base} salva por {message.from_user.first_name}!{extra_text}",
             message.chat.id,
             msg_wait.message_id,
-            reply_markup=markup
+            reply_markup=markup,
+            parse_mode="HTML"
         )
+
+    val_float = None
+    try:
+        val_float = float(val.replace(",", "."))
+    except:
+        pass
+
+    gasto = 0
+    tempo_str = ""
+    hora_antiga_str = ""
+    tem_calculo = False
+    acao_antiga = ""
+
+    if val_float is not None and ultimo_registro.get("leitura") is not None:
+        try:
+            leitura_antiga = float(ultimo_registro["leitura"])
+            gasto = val_float - leitura_antiga
+            acao_antiga = ultimo_registro.get("acao", "Desconhecida")
+            quem_antigo = ultimo_registro.get("quem", "Alguém")
+            
+            fmt = "%Y-%m-%d %H:%M:%S"
+            data_hora_antiga = datetime.strptime(ultimo_registro["timestamp"], fmt)
+            agora = datetime.now(TZ).replace(tzinfo=None)
+            diff = agora - data_hora_antiga
+            horas = diff.total_seconds() // 3600
+            minutos = (diff.total_seconds() % 3600) // 60
+            tempo_str = f"{int(horas)}h e {int(minutos)}m"
+            hora_antiga_str = data_hora_antiga.strftime("%H:%M (%d/%m)")
+            tem_calculo = True
+        except Exception as e:
+            print("Erro ao calcular diff:", e)
+
+    proximo_estado = "ocioso"
 
     if est_ant == "editando":
         try:
@@ -523,19 +596,23 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
             linhas = sheet.col_values(1)
             ultima_linha = len(linhas)
             if ultima_linha > 1:
-                val_float = float(val.replace(",", "."))
-                sheet.update_cell(ultima_linha, 4, val_float)
+                if val_float is not None:
+                    sheet.update_cell(ultima_linha, 4, val_float)
                 salvar_log(message.from_user.first_name, f"Editou. Novo Marcador: {val}")
                 bot.edit_message_text(
                     f"✅ Leitura editada com sucesso para {val}!", 
                     message.chat.id, 
                     msg_wait.message_id, 
-                    reply_markup=markup
+                    reply_markup=markup,
+                    parse_mode="HTML"
                 )
+                if val_float is not None:
+                    atualizar_ultimo_registro("Edição", message.from_user.first_name, val_float)
             else:
                 bot.edit_message_text("❌ Não há dados para editar.", message.chat.id, msg_wait.message_id)
         except Exception as e:
             bot.edit_message_text(f"❌ Erro Técnico ao editar: {str(e)}", message.chat.id, msg_wait.message_id)
+
     elif est_ant == "noturno":
         salvar_log(message.from_user.first_name, f"Desligou. Marcador: {val}")
         with open("leitura_noturna.txt", "w") as f:
@@ -544,20 +621,63 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
             salvar_na_planilha(message.from_user.first_name, val)
         except:
             pass
-        msg_sucesso(f"✅ Leitura Noturna ({val})")
+            
+        extra = ""
+        if tem_calculo:
+            extra = f"\n\n📊 <b>Último registro:</b> {acao_antiga} por {quem_antigo} às {hora_antiga_str} (há {tempo_str}).\n💧 <b>Gasto:</b> {gasto:.3f}"
+            
+        msg_sucesso(f"✅ Leitura Noturna ({val})", extra_text=extra)
+        if val_float is not None:
+            atualizar_ultimo_registro("Desligou", message.from_user.first_name, val_float)
+
     elif est_ant == "matinal" or est_ant == "avulso":
         try:
-            if salvar_na_planilha(message.from_user.first_name, val):
+            valor_planilha = val
+            divergencia = False
+            
+            # Opção B: Se for matinal, e a última ação foi Desligou, e tem gasto, a planilha recebe a leitura antiga.
+            if est_ant == "matinal" and tem_calculo and acao_antiga == "Desligou" and gasto > 0:
+                valor_planilha = str(leitura_antiga).replace(".", ",")
+                divergencia = True
+
+            if salvar_na_planilha(message.from_user.first_name, valor_planilha):
                 tipo = "Matinal" if est_ant == "matinal" else "Avulsa"
-                salvar_log(message.from_user.first_name, f"{tipo}. Marcador: {val}")
-                msg_sucesso(f"✅ Leitura {tipo} ({val})")
+                
+                if divergencia:
+                    salvar_log(message.from_user.first_name, f"Matinal c/ Divergência. Leitura real: {val}. Planilha recebeu: {valor_planilha}")
+                    
+                    extra = f"\n\n⚠️ <b>Divergência Detectada!</b>\nO último registro foi 'Desligou' ({leitura_antiga}).\nHouve um gasto não registrado de <b>{gasto:.3f}</b> antes de você registrar!\n\n"
+                    extra += f"👉 <i>Para a conta do dia fechar certo, o bot salvou o início do dia como {leitura_antiga} na sua planilha.</i>\n\n"
+                    extra += f"⏱️ Qual a sua estimativa de tempo que a água ficou ligada? (ex: '2h', 'foi vazamento'). Ou digite /pular"
+                    
+                    msg_sucesso(f"✅ Leitura {tipo} recebida ({val})", extra_text=extra)
+                    if val_float is not None:
+                        atualizar_ultimo_registro("Ligou", message.from_user.first_name, val_float)
+                    proximo_estado = f"aguardando_estimativa_{gasto:.3f}_{hora_antiga_str}"
+                    
+                else:
+                    salvar_log(message.from_user.first_name, f"{tipo}. Marcador: {val}")
+                    
+                    extra = ""
+                    if est_ant == "avulso" and tem_calculo:
+                        extra = f"\n\n📊 <b>Último registro:</b> {acao_antiga} por {quem_antigo} às {hora_antiga_str} (há {tempo_str})."
+                        extra += f"\n💧 <b>Gasto desde então:</b> {gasto:.3f}"
+                        extra += f"\n\n⏱️ Qual a sua estimativa de tempo que ele ficou LIGADO nesse período? (ex: '2h', '1h30m'). Ou digite /pular"
+                        proximo_estado = f"aguardando_estimativa_{gasto:.3f}_{hora_antiga_str}"
+                    elif tem_calculo:
+                        extra = f"\n\n📊 <b>Último registro:</b> {acao_antiga} por {quem_antigo} às {hora_antiga_str} (há {tempo_str}).\n💧 <b>Gasto:</b> {gasto:.3f}"
+                    
+                    msg_sucesso(f"✅ Leitura {tipo} ({val})", extra_text=extra)
+                    if val_float is not None:
+                        atualizar_ultimo_registro("Ligou" if est_ant == "matinal" else "Avulsa", message.from_user.first_name, val_float)
         except Exception as e:
             bot.edit_message_text(
                 f"❌ Erro Técnico: {str(e)}",
                 message.chat.id,
                 msg_wait.message_id,
             )
-    set_estado(chat_id, "ocioso")
+            
+    set_estado(chat_id, proximo_estado)
 
 @bot.callback_query_handler(func=lambda call: True, is_authorized=True)
 def callback_geral(call):
