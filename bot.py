@@ -635,37 +635,38 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
             valor_planilha = val
             divergencia = False
             
-            # Opção B: Se for matinal, e a última ação foi Desligou, e tem gasto, a planilha recebe a leitura antiga.
-            if est_ant == "matinal" and tem_calculo and acao_antiga == "Desligou" and gasto > 0:
-                valor_planilha = str(leitura_antiga).replace(".", ",")
+            # A divergência ocorre se a última ação registrada foi que a água estava desligada ("Desligou"),
+            # mas agora detectamos consumo real e significativo (maior que 0.02 m³ ou 20 litros).
+            if tem_calculo and acao_antiga == "Desligou" and gasto > 0.02:
                 divergencia = True
+                if est_ant == "matinal":
+                    # Opção B: A planilha recebe a leitura antiga para ajustar o consumo diário corretamente.
+                    valor_planilha = str(leitura_antiga).replace(".", ",")
 
             if salvar_na_planilha(message.from_user.first_name, valor_planilha):
                 tipo = "Matinal" if est_ant == "matinal" else "Avulsa"
                 
                 if divergencia:
-                    salvar_log(message.from_user.first_name, f"Matinal c/ Divergência. Leitura real: {val}. Planilha recebeu: {valor_planilha}")
+                    log_msg = f"{tipo} c/ Divergência. Leitura real: {val}. Planilha recebeu: {valor_planilha}" if est_ant == "matinal" else f"{tipo} c/ Divergência. Leitura: {val}."
+                    salvar_log(message.from_user.first_name, log_msg)
                     
                     extra = f"\n\n⚠️ <b>Divergência Detectada!</b>\nO último registro foi 'Desligou' ({leitura_antiga}).\nHouve um gasto não registrado de <b>{gasto:.3f}</b> antes de você registrar!\n\n"
-                    extra += f"👉 <i>Para a conta do dia fechar certo, o bot salvou o início do dia como {leitura_antiga} na sua planilha.</i>\n\n"
-                    extra += f"⏱️ Qual a sua estimativa de tempo que a água ficou ligada? (ex: '2h', 'foi vazamento'). Ou digite /pular"
+                    if est_ant == "matinal":
+                        extra += f"👉 <i>Para a conta do dia fechar certo, o bot salvou o início do dia como {leitura_antiga} na sua planilha.</i>\n\n"
+                    extra += f"⏱️ Qual a sua estimativa de tempo que a água ficou LIGADA nesse período? (ex: '2h', '1h30m'). Ou digite /pular"
                     
                     msg_sucesso(f"✅ Leitura {tipo} recebida ({val})", extra_text=extra)
                     if val_float is not None:
-                        atualizar_ultimo_registro("Ligou", message.from_user.first_name, val_float)
+                        atualizar_ultimo_registro("Ligou" if est_ant == "matinal" else "Avulsa", message.from_user.first_name, val_float)
                     proximo_estado = f"aguardando_estimativa_{gasto:.3f}_{hora_antiga_str}"
                     
                 else:
                     salvar_log(message.from_user.first_name, f"{tipo}. Marcador: {val}")
                     
                     extra = ""
-                    if est_ant == "avulso" and tem_calculo:
+                    if tem_calculo:
                         extra = f"\n\n📊 <b>Último registro:</b> {acao_antiga} por {quem_antigo} às {hora_antiga_str} (há {tempo_str})."
-                        extra += f"\n💧 <b>Gasto desde então:</b> {gasto:.3f}"
-                        extra += f"\n\n⏱️ Qual a sua estimativa de tempo que ele ficou LIGADO nesse período? (ex: '2h', '1h30m'). Ou digite /pular"
-                        proximo_estado = f"aguardando_estimativa_{gasto:.3f}_{hora_antiga_str}"
-                    elif tem_calculo:
-                        extra = f"\n\n📊 <b>Último registro:</b> {acao_antiga} por {quem_antigo} às {hora_antiga_str} (há {tempo_str}).\n💧 <b>Gasto:</b> {gasto:.3f}"
+                        extra += f"\n💧 <b>Gasto desde então:</b> {gasto:.3f}" if est_ant == "avulso" else f"\n💧 <b>Gasto:</b> {gasto:.3f}"
                     
                     msg_sucesso(f"✅ Leitura {tipo} ({val})", extra_text=extra)
                     if val_float is not None:
