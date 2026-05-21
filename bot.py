@@ -192,8 +192,16 @@ def salvar_na_planilha(quem, leitura):
     except ValueError:
         pass
         
-    sheet.append_row([data_atual, hora_atual, quem, leitura], table_range="A:D", value_input_option="USER_ENTERED")
-    return True
+    res = sheet.append_row([data_atual, hora_atual, quem, leitura], table_range="A:D", value_input_option="USER_ENTERED")
+    try:
+        updated_range = res.get('updates', {}).get('updatedRange', '')
+        import re
+        match = re.search(r'[A-Z]+(\d+):[A-Z]+\d+', updated_range)
+        if match:
+            return int(match.group(1))
+    except:
+        pass
+    return len(sheet.col_values(1))
 
 
 def salvar_log(quem, acao):
@@ -427,7 +435,7 @@ def monitorar_esquecimento(acao, usuario, chat_id, token_recebido):
 # --- PROCESSAMENTO DE DADOS ---
 @bot.message_handler(
     func=lambda m: (
-        (get_estado(m.chat.id) in ["matinal", "noturno", "avulso", "editando", "add_horario_wait"] or str(get_estado(m.chat.id)).startswith("edit_horario_wait_") or str(get_estado(m.chat.id)).startswith("aguardando_estimativa"))
+        (get_estado(m.chat.id) in ["matinal", "noturno", "avulso", "editando", "add_horario_wait"] or str(get_estado(m.chat.id)).startswith("edit_horario_wait_") or str(get_estado(m.chat.id)).startswith("editando_linha_") or str(get_estado(m.chat.id)).startswith("aguardando_estimativa"))
         and m.content_type == "text"
         and m.text not in TEXTOS_BOTOES
     ),
@@ -541,11 +549,21 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
     val = leitura_bruta.replace(".", ",")
     
     # Prepara o teclado para edição e exclusão
-    markup = InlineKeyboardMarkup()
-    markup.add(
-        InlineKeyboardButton("✏️ Editar", callback_data="editar_ultima"),
-        InlineKeyboardButton("❌ Apagar", callback_data="apagar_ultima")
-    )
+    def get_markup(linha=None):
+        m = InlineKeyboardMarkup()
+        if linha:
+            m.add(
+                InlineKeyboardButton("✏️ Editar", callback_data=f"editar_linha_{linha}"),
+                InlineKeyboardButton("❌ Apagar", callback_data=f"apagar_linha_{linha}")
+            )
+        else:
+            m.add(
+                InlineKeyboardButton("✏️ Editar", callback_data="editar_ultima"),
+                InlineKeyboardButton("❌ Apagar", callback_data="apagar_ultima")
+            )
+        return m
+    
+    markup = get_markup()
 
     # Função auxiliar para editar a mensagem final incluindo o nome e os botões
     def msg_sucesso(texto_base, extra_text=""):
@@ -613,12 +631,33 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
         except Exception as e:
             bot.edit_message_text(f"❌ Erro Técnico ao editar: {str(e)}", message.chat.id, msg_wait.message_id)
 
+    elif str(est_ant).startswith("editando_linha_"):
+        linha = int(est_ant.split("_")[2])
+        try:
+            sheet = conectar_planilha("Dados")
+            if val_float is not None:
+                sheet.update_cell(linha, 4, val_float)
+            salvar_log(message.from_user.first_name, f"Editou linha {linha}. Novo Marcador: {val}")
+            bot.edit_message_text(
+                f"✅ Leitura editada com sucesso para {val}!", 
+                message.chat.id, 
+                msg_wait.message_id, 
+                reply_markup=markup,
+                parse_mode="HTML"
+            )
+            if val_float is not None:
+                atualizar_ultimo_registro("Edição", message.from_user.first_name, val_float)
+        except Exception as e:
+            bot.edit_message_text(f"❌ Erro Técnico ao editar: {str(e)}", message.chat.id, msg_wait.message_id)
+
     elif est_ant == "noturno":
         salvar_log(message.from_user.first_name, f"Desligou. Marcador: {val}")
         with open("leitura_noturna.txt", "w") as f:
             f.write(val)
         try:
-            salvar_na_planilha(message.from_user.first_name, val)
+            res_linha = salvar_na_planilha(message.from_user.first_name, val)
+            if isinstance(res_linha, int) and res_linha is not True:
+                markup = get_markup(res_linha)
         except:
             pass
             
@@ -643,7 +682,10 @@ def processar_leitura(message, leitura_bruta, msg_wait=None):
                     # Opção B: A planilha recebe a leitura antiga para ajustar o consumo diário corretamente.
                     valor_planilha = str(leitura_antiga).replace(".", ",")
 
-            if salvar_na_planilha(message.from_user.first_name, valor_planilha):
+            res_linha = salvar_na_planilha(message.from_user.first_name, valor_planilha)
+            if res_linha:
+                if isinstance(res_linha, int) and res_linha is not True:
+                    markup = get_markup(res_linha)
                 tipo = "Matinal" if est_ant == "matinal" else "Avulsa"
                 
                 if divergencia:
@@ -714,6 +756,21 @@ def callback_geral(call):
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
             bot.send_message(call.message.chat.id, "✏️ <b>Modo de Edição</b>\nDigite a leitura correta ou envie a foto corrigida (ou digite /cancelar para sair):", parse_mode="HTML")
             bot.answer_callback_query(call.id, "Aguardando nova leitura...")
+            
+        elif call.data.startswith("editar_linha_"):
+            linha = call.data.split("_")[2]
+            set_estado(chat_id, f"editando_linha_{linha}")
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+            bot.send_message(call.message.chat.id, f"✏️ <b>Modo de Edição</b>\nDigite a leitura correta ou envie a foto corrigida (ou digite /cancelar para sair):", parse_mode="HTML")
+            bot.answer_callback_query(call.id, f"Aguardando nova leitura para a linha {linha}...")
+
+        elif call.data.startswith("apagar_linha_"):
+            linha = call.data.split("_")[2]
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+            sheet = conectar_planilha("Dados")
+            sheet.batch_clear([f"A{linha}:D{linha}"])
+            bot.edit_message_text(f"🗑️ Leitura da linha {linha} apagada da planilha!", call.message.chat.id, call.message.message_id)
+            salvar_log(call.from_user.first_name, f"Apagou a leitura da linha {linha}")
             
         # --- Lógica Nova: Painel de Horários ---
         elif call.data == "fechar_painel":
